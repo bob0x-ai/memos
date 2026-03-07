@@ -33,20 +33,25 @@ async function captureHook(event, ctx, config, client) {
         console.log('Exchange filtered as trivial, not capturing');
         return;
     }
-    // Build episode content
-    const content = (0, filter_1.buildEpisodeContent)(lastUser, lastAssistant);
-    // Build metadata
-    const timestamp = Date.now();
-    const metadata = {
-        agent_id: ctx.agentId,
-        user_id: ctx.userId || 'unknown',
-        session_id: ctx.sessionId || 'unknown',
-        channel: ctx.channel || 'unknown',
-        timestamp,
-    };
+    // Build messages for Graphiti
+    const timestamp = new Date().toISOString();
+    const messages = [
+        {
+            content: lastUser,
+            role_type: 'user',
+            role: ctx.userId || 'user',
+            timestamp,
+        },
+        {
+            content: lastAssistant,
+            role_type: 'assistant',
+            role: ctx.agentId,
+            timestamp,
+        }
+    ];
     try {
         // Send to Graphiti with retry logic
-        await (0, graphiti_client_1.retryWithBackoff)(() => client.addEpisode(department, content, metadata), config.rate_limit_retries);
+        await (0, graphiti_client_1.retryWithBackoff)(() => client.addMessages(department, messages), config.rate_limit_retries);
         console.log(`Successfully captured episode for agent ${ctx.agentId} in department ${department}`);
     }
     catch (error) {

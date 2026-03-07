@@ -22,7 +22,6 @@ export async function memosRecallTool(
 ): Promise<{
   success: boolean;
   facts: Array<{ uuid: string; fact: string; valid_at?: string; invalid_at?: string }>;
-  nodes: Array<{ uuid: string; name: string; summary: string; labels: string[] }>;
   error?: string;
 }> {
   try {
@@ -32,7 +31,6 @@ export async function memosRecallTool(
       return {
         success: false,
         facts: [],
-        nodes: [],
         error: `No department found for agent ${ctx.agentId}`,
       };
     }
@@ -41,21 +39,16 @@ export async function memosRecallTool(
 
     // Search facts
     const facts = await client.searchFacts(department, params.query, limit);
-    
-    // Also search nodes
-    const nodes = await client.searchNodes(department, params.query, Math.min(limit, 5));
 
     return {
       success: true,
       facts,
-      nodes,
     };
   } catch (error) {
     console.error('memos_recall tool failed:', error);
     return {
       success: false,
       facts: [],
-      nodes: [],
       error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
@@ -82,7 +75,6 @@ export async function memosCrossDeptTool(
 ): Promise<{
   success: boolean;
   facts: Array<{ uuid: string; fact: string; valid_at?: string; invalid_at?: string }>;
-  nodes: Array<{ uuid: string; name: string; summary: string; labels: string[] }>;
   error?: string;
 }> {
   try {
@@ -91,7 +83,6 @@ export async function memosCrossDeptTool(
       return {
         success: false,
         facts: [],
-        nodes: [],
         error: `Department "${params.department}" not found`,
       };
     }
@@ -100,21 +91,16 @@ export async function memosCrossDeptTool(
 
     // Search facts in target department
     const facts = await client.searchFacts(params.department, params.query, limit);
-    
-    // Also search nodes
-    const nodes = await client.searchNodes(params.department, params.query, Math.min(limit, 5));
 
     return {
       success: true,
       facts,
-      nodes,
     };
   } catch (error) {
     console.error('memos_cross_dept tool failed:', error);
     return {
       success: false,
       facts: [],
-      nodes: [],
       error: error instanceof Error ? error.message : 'Unknown error',
     };
   }

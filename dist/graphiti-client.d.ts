@@ -5,13 +5,16 @@ export interface EpisodeMetadata {
     channel: string;
     timestamp: number;
 }
-export interface AddEpisodeRequest {
-    name: string;
-    episode_body: string;
-    source: 'text' | 'json';
-    source_description: string;
-    reference_time: string;
+export interface AddMessagesRequest {
     group_id: string;
+    messages: Array<{
+        content: string;
+        role_type: 'user' | 'assistant' | 'system';
+        role?: string;
+        timestamp?: string;
+        source_description?: string;
+        uuid?: string;
+    }>;
 }
 export interface SearchResult {
     uuid: string;
@@ -37,13 +40,17 @@ export declare class GraphitiClient {
     private client;
     constructor(config: GraphitiClientConfig);
     /**
-     * Add an episode to the knowledge graph
+     * Add messages to the knowledge graph
      * @param groupId The department/group ID (e.g., "ops", "devops")
-     * @param content The episode content (user + assistant messages)
-     * @param metadata Episode metadata including agent_id, user_id, session_id
-     * @returns The created episode UUID
+     * @param messages Array of messages to add
+     * @returns Success status
      */
-    addEpisode(groupId: string, content: string, metadata: EpisodeMetadata): Promise<string>;
+    addMessages(groupId: string, messages: Array<{
+        content: string;
+        role_type: 'user' | 'assistant';
+        role?: string;
+        timestamp?: string;
+    }>): Promise<boolean>;
     /**
      * Search for facts/relationships in the graph
      * @param groupId The department/group ID
@@ -53,23 +60,28 @@ export declare class GraphitiClient {
      */
     searchFacts(groupId: string, query: string, limit?: number): Promise<SearchResult[]>;
     /**
-     * Search for nodes/entities in the graph
+     * Get memory for a conversation context
      * @param groupId The department/group ID
-     * @param query Search query
-     * @param limit Maximum number of results
-     * @returns Array of node results
+     * @param messages Current conversation messages
+     * @param limit Maximum number of facts
+     * @returns Memory results
      */
-    searchNodes(groupId: string, query: string, limit?: number): Promise<NodeResult[]>;
+    getMemory(groupId: string, messages: Array<{
+        content: string;
+        role_type: 'user' | 'assistant';
+    }>, limit?: number): Promise<{
+        facts: SearchResult[];
+        nodes: NodeResult[];
+    }>;
     /**
      * Check if Graphiti server is healthy
      * @returns True if healthy
      */
     healthCheck(): Promise<boolean>;
     /**
-     * Get Graphiti server status
-     * @returns Status information
+     * Clear all data (use with caution)
      */
-    getStatus(): Promise<unknown>;
+    clear(): Promise<void>;
 }
 /**
  * Retry a Graphiti operation with exponential backoff

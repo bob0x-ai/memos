@@ -8,13 +8,16 @@ export interface EpisodeMetadata {
   timestamp: number;
 }
 
-export interface AddEpisodeRequest {
-  name: string;
-  episode_body: string;
-  source: 'text' | 'json';
-  source_description: string;
-  reference_time: string;
+export interface AddMessagesRequest {
   group_id: string;
+  messages: Array<{
+    content: string;
+    role_type: 'user' | 'assistant' | 'system';
+    role?: string;
+    timestamp?: string;
+    source_description?: string;
+    uuid?: string;
+  }>;
 }
 
 export interface SearchResult {
@@ -54,28 +57,25 @@ export class GraphitiClient {
   }
 
   /**
-   * Add an episode to the knowledge graph
+   * Add messages to the knowledge graph
    * @param groupId The department/group ID (e.g., "ops", "devops")
-   * @param content The episode content (user + assistant messages)
-   * @param metadata Episode metadata including agent_id, user_id, session_id
-   * @returns The created episode UUID
+   * @param messages Array of messages to add
+   * @returns Success status
    */
-  async addEpisode(
+  async addMessages(
     groupId: string,
-    content: string,
-    metadata: EpisodeMetadata
-  ): Promise<string> {
-    const request: AddEpisodeRequest = {
-      name: `episode_${metadata.timestamp}`,
-      episode_body: content,
-      source: 'text',
-      source_description: metadata.channel,
-      reference_time: new Date().toISOString(),
+    messages: Array<{ content: string; role_type: 'user' | 'assistant'; role?: string; timestamp?: string }>
+  ): Promise<boolean> {
+    const request: AddMessagesRequest = {
       group_id: groupId,
+      messages: messages.map(m => ({
+        ...m,
+        source_description: 'openclaw-conversation',
+      })),
     };
 
-    const response = await this.client.post('/add_episode', request);
-    return response.data.uuid;
+    const response = await this.client.post('/messages', request);
+    return response.status === 202;
   }
 
   /**
@@ -93,31 +93,35 @@ export class GraphitiClient {
     const response = await this.client.post('/search', {
       query,
       group_ids: [groupId],
-      num_results: limit,
+      max_facts: limit,
     });
 
     return response.data.results || [];
   }
 
   /**
-   * Search for nodes/entities in the graph
+   * Get memory for a conversation context
    * @param groupId The department/group ID
-   * @param query Search query
-   * @param limit Maximum number of results
-   * @returns Array of node results
+   * @param messages Current conversation messages
+   * @param limit Maximum number of facts
+   * @returns Memory results
    */
-  async searchNodes(
+  async getMemory(
     groupId: string,
-    query: string,
+    messages: Array<{ content: string; role_type: 'user' | 'assistant' }>,
     limit: number = 10
-  ): Promise<NodeResult[]> {
-    const response = await this.client.post('/search_nodes', {
-      query,
-      group_ids: [groupId],
-      num_results: limit,
+  ): Promise<{ facts: SearchResult[]; nodes: NodeResult[] }> {
+    const response = await this.client.post('/get-memory', {
+      group_id: groupId,
+      messages: messages.map(m => ({
+        ...m,
+        timestamp: new Date().toISOString(),
+      })),
+      max_facts: limit,
+      center_node_uuid: null,
     });
 
-    return response.data.results || [];
+    return response.data || { facts: [], nodes: [] };
   }
 
   /**
@@ -126,7 +130,7 @@ export class GraphitiClient {
    */
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await this.client.get('/health');
+      const response = await this.client.get('/healthcheck');
       return response.status === 200;
     } catch {
       return false;
@@ -134,12 +138,10 @@ export class GraphitiClient {
   }
 
   /**
-   * Get Graphiti server status
-   * @returns Status information
+   * Clear all data (use with caution)
    */
-  async getStatus(): Promise<unknown> {
-    const response = await this.client.get('/status');
-    return response.data;
+  async clear(): Promise<void> {
+    await this.client.post('/clear');
   }
 }
 

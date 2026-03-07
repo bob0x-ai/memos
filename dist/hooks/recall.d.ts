@@ -3,7 +3,6 @@ import { MemosConfig } from '../config';
 /**
  * Format search results into context for the agent
  * @param facts Array of fact results
- * @param nodes Array of node results
  * @returns Formatted context string
  */
 export declare function formatFactsAsContext(facts: Array<{
@@ -11,11 +10,6 @@ export declare function formatFactsAsContext(facts: Array<{
     fact: string;
     valid_at?: string;
     invalid_at?: string;
-}>, nodes: Array<{
-    uuid: string;
-    name: string;
-    summary: string;
-    labels: string[];
 }>): string;
 /**
  * Build a search query from recent messages

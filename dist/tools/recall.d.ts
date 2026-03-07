@@ -25,12 +25,6 @@ export declare function memosRecallTool(params: {
         valid_at?: string;
         invalid_at?: string;
     }>;
-    nodes: Array<{
-        uuid: string;
-        name: string;
-        summary: string;
-        labels: string[];
-    }>;
     error?: string;
 }>;
 /**
@@ -59,12 +53,6 @@ export declare function memosCrossDeptTool(params: {
         fact: string;
         valid_at?: string;
         invalid_at?: string;
-    }>;
-    nodes: Array<{
-        uuid: string;
-        name: string;
-        summary: string;
-        labels: string[];
     }>;
     error?: string;
 }>;

@@ -7,38 +7,26 @@ const department_1 = require("../utils/department");
 /**
  * Format search results into context for the agent
  * @param facts Array of fact results
- * @param nodes Array of node results
  * @returns Formatted context string
  */
-function formatFactsAsContext(facts, nodes) {
-    if (facts.length === 0 && nodes.length === 0) {
+function formatFactsAsContext(facts) {
+    if (facts.length === 0) {
         return '';
     }
     let context = '## Relevant Context from Memory\n\n';
-    // Add entities if present
-    if (nodes.length > 0) {
-        context += '**Entities:**\n';
-        for (const node of nodes) {
-            const labels = node.labels.join(', ');
-            context += `- **${node.name}** (${labels})\n`;
-        }
-        context += '\n';
-    }
     // Add facts
-    if (facts.length > 0) {
-        context += '**Facts:**\n';
-        for (const fact of facts) {
-            context += `- ${fact.fact}`;
-            if (fact.valid_at) {
-                context += ` (valid from ${new Date(fact.valid_at).toLocaleDateString()})`;
-            }
-            if (fact.invalid_at) {
-                context += ` (invalid since ${new Date(fact.invalid_at).toLocaleDateString()})`;
-            }
-            context += '\n';
+    context += '**Facts:**\n';
+    for (const fact of facts) {
+        context += `- ${fact.fact}`;
+        if (fact.valid_at) {
+            context += ` (valid from ${new Date(fact.valid_at).toLocaleDateString()})`;
+        }
+        if (fact.invalid_at) {
+            context += ` (invalid since ${new Date(fact.invalid_at).toLocaleDateString()})`;
         }
         context += '\n';
     }
+    context += '\n';
     return context;
 }
 /**
@@ -57,7 +45,6 @@ function buildQueryFromMessages(messages) {
         return '';
     }
     // Build a simple query from the user's most recent message
-    // (Graphiti will do semantic search on this)
     return userMessages[userMessages.length - 1];
 }
 /**
@@ -85,15 +72,15 @@ async function recallHook(event, ctx, config, client) {
         return {};
     }
     try {
-        // Search Graphiti for relevant facts
-        const facts = await client.searchFacts(department, query, config.recall_limit);
-        // Also search for nodes if we didn't get many facts
-        let nodes = [];
-        if (facts.length < 3) {
-            nodes = await client.searchNodes(department, query, 5);
-        }
+        // Convert messages to Graphiti format
+        const graphitiMessages = ctx.messages.slice(-3).map(m => ({
+            content: m.content,
+            role_type: m.role,
+        }));
+        // Get memory from Graphiti
+        const memory = await client.getMemory(department, graphitiMessages, config.recall_limit);
         // Format results into context
-        const context = formatFactsAsContext(facts, nodes);
+        const context = formatFactsAsContext(memory.facts);
         if (context) {
             return { prependSystemContext: context };
         }

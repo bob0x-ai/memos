@@ -1,7 +1,7 @@
 import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { resolveDepartment } from '../utils/department';
-import { isWorthRemembering, getLastExchange, buildEpisodeContent } from '../utils/filter';
+import { isWorthRemembering, getLastExchange } from '../utils/filter';
 
 /**
  * Hook called at agent_end to capture episodes
@@ -48,23 +48,27 @@ export async function captureHook(
     return;
   }
 
-  // Build episode content
-  const content = buildEpisodeContent(lastUser, lastAssistant);
-
-  // Build metadata
-  const timestamp = Date.now();
-  const metadata = {
-    agent_id: ctx.agentId,
-    user_id: ctx.userId || 'unknown',
-    session_id: ctx.sessionId || 'unknown',
-    channel: ctx.channel || 'unknown',
-    timestamp,
-  };
+  // Build messages for Graphiti
+  const timestamp = new Date().toISOString();
+  const messages = [
+    {
+      content: lastUser,
+      role_type: 'user' as const,
+      role: ctx.userId || 'user',
+      timestamp,
+    },
+    {
+      content: lastAssistant,
+      role_type: 'assistant' as const,
+      role: ctx.agentId,
+      timestamp,
+    }
+  ];
 
   try {
     // Send to Graphiti with retry logic
     await retryWithBackoff(
-      () => client.addEpisode(department, content, metadata),
+      () => client.addMessages(department, messages),
       config.rate_limit_retries
     );
 

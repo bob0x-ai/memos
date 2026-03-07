@@ -18,23 +18,21 @@ class GraphitiClient {
         });
     }
     /**
-     * Add an episode to the knowledge graph
+     * Add messages to the knowledge graph
      * @param groupId The department/group ID (e.g., "ops", "devops")
-     * @param content The episode content (user + assistant messages)
-     * @param metadata Episode metadata including agent_id, user_id, session_id
-     * @returns The created episode UUID
+     * @param messages Array of messages to add
+     * @returns Success status
      */
-    async addEpisode(groupId, content, metadata) {
+    async addMessages(groupId, messages) {
         const request = {
-            name: `episode_${metadata.timestamp}`,
-            episode_body: content,
-            source: 'text',
-            source_description: metadata.channel,
-            reference_time: new Date().toISOString(),
             group_id: groupId,
+            messages: messages.map(m => ({
+                ...m,
+                source_description: 'openclaw-conversation',
+            })),
         };
-        const response = await this.client.post('/add_episode', request);
-        return response.data.uuid;
+        const response = await this.client.post('/messages', request);
+        return response.status === 202;
     }
     /**
      * Search for facts/relationships in the graph
@@ -47,24 +45,28 @@ class GraphitiClient {
         const response = await this.client.post('/search', {
             query,
             group_ids: [groupId],
-            num_results: limit,
+            max_facts: limit,
         });
         return response.data.results || [];
     }
     /**
-     * Search for nodes/entities in the graph
+     * Get memory for a conversation context
      * @param groupId The department/group ID
-     * @param query Search query
-     * @param limit Maximum number of results
-     * @returns Array of node results
+     * @param messages Current conversation messages
+     * @param limit Maximum number of facts
+     * @returns Memory results
      */
-    async searchNodes(groupId, query, limit = 10) {
-        const response = await this.client.post('/search_nodes', {
-            query,
-            group_ids: [groupId],
-            num_results: limit,
+    async getMemory(groupId, messages, limit = 10) {
+        const response = await this.client.post('/get-memory', {
+            group_id: groupId,
+            messages: messages.map(m => ({
+                ...m,
+                timestamp: new Date().toISOString(),
+            })),
+            max_facts: limit,
+            center_node_uuid: null,
         });
-        return response.data.results || [];
+        return response.data || { facts: [], nodes: [] };
     }
     /**
      * Check if Graphiti server is healthy
@@ -72,7 +74,7 @@ class GraphitiClient {
      */
     async healthCheck() {
         try {
-            const response = await this.client.get('/health');
+            const response = await this.client.get('/healthcheck');
             return response.status === 200;
         }
         catch {
@@ -80,12 +82,10 @@ class GraphitiClient {
         }
     }
     /**
-     * Get Graphiti server status
-     * @returns Status information
+     * Clear all data (use with caution)
      */
-    async getStatus() {
-        const response = await this.client.get('/status');
-        return response.data;
+    async clear() {
+        await this.client.post('/clear');
     }
 }
 exports.GraphitiClient = GraphitiClient;

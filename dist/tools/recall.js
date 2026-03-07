@@ -24,19 +24,15 @@ async function memosRecallTool(params, ctx, config, client) {
             return {
                 success: false,
                 facts: [],
-                nodes: [],
                 error: `No department found for agent ${ctx.agentId}`,
             };
         }
         const limit = params.limit || 10;
         // Search facts
         const facts = await client.searchFacts(department, params.query, limit);
-        // Also search nodes
-        const nodes = await client.searchNodes(department, params.query, Math.min(limit, 5));
         return {
             success: true,
             facts,
-            nodes,
         };
     }
     catch (error) {
@@ -44,7 +40,6 @@ async function memosRecallTool(params, ctx, config, client) {
         return {
             success: false,
             facts: [],
-            nodes: [],
             error: error instanceof Error ? error.message : 'Unknown error',
         };
     }
@@ -69,19 +64,15 @@ async function memosCrossDeptTool(params, ctx, config, client) {
             return {
                 success: false,
                 facts: [],
-                nodes: [],
                 error: `Department "${params.department}" not found`,
             };
         }
         const limit = params.limit || 10;
         // Search facts in target department
         const facts = await client.searchFacts(params.department, params.query, limit);
-        // Also search nodes
-        const nodes = await client.searchNodes(params.department, params.query, Math.min(limit, 5));
         return {
             success: true,
             facts,
-            nodes,
         };
     }
     catch (error) {
@@ -89,7 +80,6 @@ async function memosCrossDeptTool(params, ctx, config, client) {
         return {
             success: false,
             facts: [],
-            nodes: [],
             error: error instanceof Error ? error.message : 'Unknown error',
         };
     }
