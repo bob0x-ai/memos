@@ -8,6 +8,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:standalone": "node tests/standalone.test.js",
+    "test:e2e": "node tests/e2e.test.js",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit"
   },
