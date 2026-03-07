@@ -1,0 +1,57 @@
+{
+  "id": "memos",
+  "name": "MEMOS - Graphiti Memory Plugin",
+  "kind": "memory",
+  "version": "0.1.0",
+  "description": "Knowledge graph-based memory with temporal tracking and department scoping",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "graphiti_url": {
+        "type": "string",
+        "default": "http://localhost:8000",
+        "description": "URL of the Graphiti server"
+      },
+      "departments": {
+        "type": "object",
+        "description": "Map of department names to agent IDs",
+        "additionalProperties": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of agent IDs in this department"
+        }
+      },
+      "sop_search_enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable SOP document search"
+      },
+      "sop_path": {
+        "type": "string",
+        "default": "~/.openclaw/workspace/sop",
+        "description": "Path to SOP documents"
+      },
+      "auto_capture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically capture episodes after agent responses"
+      },
+      "auto_recall": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically recall relevant facts before agent prompts"
+      },
+      "recall_limit": {
+        "type": "integer",
+        "default": 10,
+        "description": "Maximum number of facts to recall"
+      },
+      "rate_limit_retries": {
+        "type": "integer",
+        "default": 3,
+        "description": "Number of retries when OpenAI rate limits (429 errors)"
+      }
+    },
+    "required": ["departments"]
+  }
+}

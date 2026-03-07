@@ -1,0 +1,35 @@
+# MEMOS Configuration Example
+# Copy this file and modify for your needs
+
+# Graphiti server URL
+graphiti_url: "http://localhost:8000"
+
+# Department configuration - maps department names to agent IDs
+departments:
+  ops:
+    - main
+    - mother
+    - masa
+    - scout
+  devops:
+    - kernel
+    - nyx
+    - warden
+
+# Enable automatic episode capture (default: true)
+auto_capture: true
+
+# Enable automatic fact recall (default: true)
+auto_recall: true
+
+# Maximum number of facts to recall (default: 10)
+recall_limit: 10
+
+# Number of retries for OpenAI rate limits (default: 3)
+rate_limit_retries: 3
+
+# SOP document search (Phase 2 feature)
+sop_search_enabled: false
+
+# Path to SOP documents
+sop_path: "~/.openclaw/workspace/sop"
