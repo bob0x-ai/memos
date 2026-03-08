@@ -12,9 +12,9 @@ MEMOS is a Graphiti-based memory plugin for OpenClaw that provides:
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Graph database | FalkorDB | Simpler deployment, Redis-based, sufficient for agent memory scale |
+| Graph database | Neo4j 5.26.0 | Required by Graphiti server, GDS plugin for vector search |
 | LLM for Graphiti | OpenAI (gpt-4o-mini) | Industry standard, reliable, supports structured output |
-| Embeddings | OpenAI text-embedding-3-small | 1536-dim, stable, cheap at our scale |
+| Embeddings | OpenAI text-embedding-3-small | 1536-dim full, 1024-dim used (intentionally reduced by Graphiti) |
 | Scoping model | Per-department groups | ops/devops split, configurable |
 | SOP storage | Hook point (disabled initially) | Future: local document search |
 | Cross-dept queries | No restrictions | Any agent can query any department |
@@ -56,21 +56,25 @@ MEMOS is a Graphiti-based memory plugin for OpenClaw that provides:
 │   │                   (Python/FastAPI)                         │ │
 │   │                                                            │ │
 │   │   Endpoints:                                               │ │
-│   │   - POST /add_episode (capture memory)                     │ │
-│   │   - POST /search (recall facts)                            │ │
-│   │   - POST /search_nodes (entity search)                     │ │
-│   │   - GET /status (health check)                             │ │
+│   │   - POST /messages (add messages to queue)                 │ │
+│   │   - POST /search (search facts)                            │ │
+│   │   - POST /get-memory (context-aware retrieval)             │ │
+│   │   - GET /healthcheck (health check)                        │ │
 │   │                                                            │ │
 │   └────────────────────┬───────────────────────────────────────┘ │
 │                         │                                        │
-│                         ▼                                        │
+│                         ▼ (Bolt/Cypher)                          │
 │   ┌────────────────────────────────────────────────────────────┐ │
-│   │                     FalkorDB                               │ │
-│   │                   (Docker container)                       │ │
+│   │                     Neo4j 5.26.0                           │ │
+│   │              (with APOC + GDS plugins)                     │ │
 │   │                                                            │ │
-│   │   Graphs:                                                  │ │
-│   │   - ops-memory                                             │ │
-│   │   - devops-memory                                          │ │
+│   │   Node Types:                                              │ │
+│   │   - Entity (extracted entities)                            │ │
+│   │   - Episodic (conversation messages)                       │ │
+│   │                                                            │ │
+│   │   Edge Types:                                              │ │
+│   │   - RELATES_TO (entity relationships)                      │ │
+│   │   - MENTIONS (entity mentions in episodes)                 │ │
 │   │                                                            │ │
 │   └────────────────────────────────────────────────────────────┘ │
 │                                                                   │
@@ -114,8 +118,7 @@ This is configurable in the plugin config - groups may change.
 │       └── sop-search.ts         # Hook point (stub initially)
 ├── config/
 │   └── memos.config.example.yaml
-├── docker/
-│   └── docker-compose.yaml       # Graphiti + FalkorDB stack
+├── docker-compose.yml          # Reference: ~/stack/docker-compose.yml
 └── tests/
     └── ...
 ```
@@ -126,12 +129,12 @@ This is configurable in the plugin config - groups may change.
 
 ### Phase 1: Infrastructure Setup
 
-**1.1 Deploy Graphiti + FalkorDB**
+**1.1 Deploy Graphiti + Neo4j**
 
-Docker Compose with:
-- FalkorDB container with persistence (`-v graphiti_data:/var/lib/falkordb/data`)
+Docker Compose (~/stack/docker-compose.yml) with:
+- Neo4j 5.26.0 container with APOC + GDS plugins
 - Graphiti server container
-- Environment variables for Google Gemini API
+- Environment variables for OpenAI API
 
 **1.2 Configure LLM Provider**
 
@@ -420,27 +423,19 @@ Turn 50: "Deploy the auth service"
 
 ### API Key Storage
 
-Store OpenAI API key in a dedicated environment file for security.
+OpenAI API key is configured directly in docker-compose.yml:
 
-**Recommended approach:**
-
-```bash
-# ~/stack/.env.graphiti
-OPENAI_API_KEY=sk-proj-...
-```
-
-**Docker Compose:**
+**Docker Compose (~/stack/docker-compose.yml):**
 ```yaml
 graphiti:
   image: zepai/graphiti:latest
-  env_file:
-    - .env.graphiti
+  environment:
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - MODEL_NAME=gpt-4o-mini
+    - EMBEDDING_MODEL_NAME=text-embedding-3-small
 ```
 
-**Benefits:**
-- Only Graphiti container has access to the key
-- Easy to rotate without touching other services
-- Simple to manage for single-tenant deployment
+**Security note:** For production, consider using Docker secrets or a separate .env file. For this single-tenant deployment, direct environment variables are sufficient.
 
 ---
 
@@ -539,28 +534,39 @@ Facts should be formatted with entity names highlighted:
 
 ---
 
-## FalkorDB Persistence
+## Neo4j Persistence
 
-FalkorDB uses Redis-based persistence:
+Neo4j provides ACID transactions and persistence:
 
-**Recommended config:**
+**Docker Compose configuration:**
+```yaml
+neo4j:
+  image: neo4j:5.26.0
+  volumes:
+    - ./data/neo4j:/data
+  environment:
+    - NEO4J_AUTH=neo4j/memospass123
+    - NEO4J_PLUGINS=["apoc", "graph-data-science"]
 ```
-appendonly yes
-appendfsync everysec
-```
 
-This provides:
-- Max 1 second data loss
-- Minimal performance impact
-- Suitable for agent memory (not financial transactions)
+**Features:**
+- Full ACID compliance
+- Automatic index creation by Graphiti
+- Vector similarity search via GDS plugin
+- Web UI at http://localhost:7474
 
-**Docker volume:**
-```bash
-docker run -d --name graphiti-db \
-  -v graphiti_data:/var/lib/falkordb/data \
-  -p 6379:6379 \
-  falkordb/falkordb:latest
-```
+---
+
+## Embedding Dimensions
+
+**Important:** Graphiti intentionally reduces embedding dimensions from 1536 to 1024.
+
+- **Full OpenAI dimensions:** 1536 (text-embedding-3-small)
+- **Graphiti used dimensions:** 1024
+- **Reason:** Performance optimization with minimal quality loss
+- **Implementation:** `embedding[:embedding_dim]` slice in OpenAIEmbedder
+
+This is working as designed - the full embedding is generated by OpenAI, then truncated by Graphiti for faster vector search.
 
 ---
 
@@ -568,7 +574,7 @@ docker run -d --name graphiti-db \
 
 | Aspect | Nemos2 (current) | MEMOS (new) |
 |--------|------------------|-------------|
-| Storage | Qdrant (vectors) | FalkorDB (graph) |
+| Storage | Qdrant (vectors) | Neo4j (graph) |
 | Memory unit | Text summaries | Entities + Relationships |
 | Temporal | ❌ No | ✅ Bi-temporal |
 | Relationships | ❌ No | ✅ Auto-extracted |
@@ -579,13 +585,19 @@ docker run -d --name graphiti-db \
 
 ---
 
+## Deployment Status
+
+✅ **Phase 1:** Infrastructure - Neo4j 5.26.0 + Graphiti running
+✅ **Phase 2:** Plugin Core - HTTP client, config, validation complete
+✅ **Phase 3:** Hooks - Capture and recall implemented
+✅ **Phase 4:** Tools - memos_recall and memos_cross_dept complete
+✅ **Phase 5:** SOP Search - Hook point ready for Phase 2
+✅ **Phase 6:** Observability - Prometheus metrics added
+✅ **Documentation:** AGENTS.md and README.md complete
+
 ## Next Steps
 
-1. Create project structure
-2. Implement Graphiti HTTP client
-3. Implement capture hook
-4. Implement recall hook
-5. Add agent tools
-6. Add metrics endpoint
-7. Test with real conversations
-8. Write AGENTS.md for the project
+1. Configure OpenClaw to use memos plugin
+2. Test with real agent conversations
+3. Monitor OpenAI API usage and costs
+4. (Optional) Add SOP document search in Phase 2
