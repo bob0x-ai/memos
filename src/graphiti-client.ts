@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { logger } from './utils/logger';
 
 export interface EpisodeMetadata {
   agent_id: string;
@@ -18,6 +19,7 @@ export interface AddMessagesRequest {
     source_description?: string;
     uuid?: string;
   }>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface SearchResult {
@@ -27,6 +29,9 @@ export interface SearchResult {
   target_node_uuid: string;
   valid_at?: string;
   invalid_at?: string;
+  access_level?: string;
+  content_type?: string;
+  importance?: number;
 }
 
 export interface NodeResult {
@@ -41,6 +46,12 @@ export interface NodeResult {
 export interface GraphitiClientConfig {
   baseUrl: string;
   timeout?: number;
+}
+
+export interface MemoryFilters {
+  access_levels?: string[];
+  content_types?: string[];
+  min_importance?: number;
 }
 
 export class GraphitiClient {
@@ -64,7 +75,8 @@ export class GraphitiClient {
    */
   async addMessages(
     groupId: string,
-    messages: Array<{ content: string; role_type: 'user' | 'assistant'; role?: string; timestamp?: string }>
+    messages: Array<{ content: string; role_type: 'user' | 'assistant'; role?: string; timestamp?: string }>,
+    metadata?: Record<string, unknown>
   ): Promise<boolean> {
     const request: AddMessagesRequest = {
       group_id: groupId,
@@ -72,6 +84,7 @@ export class GraphitiClient {
         ...m,
         source_description: 'openclaw-conversation',
       })),
+      metadata,
     };
 
     const response = await this.client.post('/messages', request);
@@ -109,9 +122,10 @@ export class GraphitiClient {
   async getMemory(
     groupId: string,
     messages: Array<{ content: string; role_type: 'user' | 'assistant' }>,
-    limit: number = 10
+    limit: number = 10,
+    filters?: MemoryFilters
   ): Promise<{ facts: SearchResult[]; nodes: NodeResult[] }> {
-    const response = await this.client.post('/get-memory', {
+    const requestBody: Record<string, unknown> = {
       group_id: groupId,
       messages: messages.map(m => ({
         ...m,
@@ -119,7 +133,19 @@ export class GraphitiClient {
       })),
       max_facts: limit,
       center_node_uuid: null,
-    });
+    };
+
+    if (filters?.access_levels) {
+      requestBody.access_levels = filters.access_levels;
+    }
+    if (filters?.content_types) {
+      requestBody.content_types = filters.content_types;
+    }
+    if (filters?.min_importance !== undefined) {
+      requestBody.min_importance = filters.min_importance;
+    }
+
+    const response = await this.client.post('/get-memory', requestBody);
 
     return response.data || { facts: [], nodes: [] };
   }
@@ -164,7 +190,7 @@ export async function retryWithBackoff<T>(
       // Check if it's a rate limit error (429)
       if (axiosError.response?.status === 429 && attempt < retries - 1) {
         const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
-        console.warn(
+        logger.warn(
           `Rate limited by Graphiti, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`
         );
         await sleep(delay);
@@ -173,7 +199,7 @@ export async function retryWithBackoff<T>(
 
       // Check if Graphiti server is unavailable
       if (axiosError.code === 'ECONNREFUSED' || axiosError.code === 'ENOTFOUND') {
-        console.error('Graphiti server unavailable');
+        logger.error('Graphiti server unavailable');
         throw new Error('Graphiti server unavailable');
       }
 

@@ -18,18 +18,15 @@
     "paths": {
       "@/*": ["*"]
     },
-    "types": ["node"]
+    "types": ["node", "jest"]
   },
   "include": [
-    "*.ts",
-    "hooks/*.ts",
-    "tools/*.ts",
-    "metrics/*.ts",
-    "utils/*.ts"
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "*.ts"
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "tests"
+    "dist"
   ]
 }

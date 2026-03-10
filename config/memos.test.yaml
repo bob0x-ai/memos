@@ -1,0 +1,78 @@
+name: memos-test
+version: 1.0.0
+
+# TEST CONFIGURATION - Isolated from production
+# Uses separate departments to prevent test data pollution
+
+ontology:
+  entity_types:
+    - Person
+    - System
+    - Project
+    - Error
+    - Document
+    - Organization
+  
+  content_types:
+    - fact
+    - decision
+    - preference
+    - learning
+    - summary
+    - sop
+    - warning
+    - contact
+  
+  access_levels:
+    - public
+    - restricted
+    - confidential
+
+# Test departments - completely separate from production
+departments:
+  test-ops:
+    agents: [test-main, test-mother]
+    access_level: restricted
+  test-devops:
+    agents: [test-kernel, test-nyx]
+    access_level: restricted
+  test-management:
+    agents: [test-coo, test-ceo]
+    access_level: confidential
+
+agents:
+  test-kernel:
+    department: test-devops
+    access_level: restricted
+    recall:
+      content_types: [fact, learning, warning, sop]
+      max_results: 5
+      reranker: rrf
+      min_importance: 1
+  
+  test-main:
+    department: test-ops
+    access_level: restricted
+    recall:
+      content_types: [fact, preference]
+      max_results: 5
+      reranker: rrf
+      min_importance: 1
+  
+  test-coo:
+    department: test-management
+    access_level: confidential
+    recall:
+      content_types: [summary, decision]
+      max_results: 3
+      reranker: cross_encoder
+      min_importance: 1
+
+summarization:
+  enabled: false  # Disabled for tests
+  cache_ttl_hours: 1
+
+llm:
+  model: gpt-4o-mini
+  temperature: 0.1
+  max_tokens: 100

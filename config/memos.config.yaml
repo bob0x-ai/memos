@@ -1,0 +1,84 @@
+name: memos
+version: 1.0.0
+
+ontology:
+  entity_types:
+    - Person
+    - System
+    - Project
+    - Error
+    - Document
+    - Organization
+  
+  content_types:
+    - fact
+    - decision
+    - preference
+    - learning
+    - summary
+    - sop
+    - warning
+    - contact
+  
+  access_levels:
+    - public
+    - restricted
+    - confidential
+
+departments:
+  ops:
+    agents: [main, mother, masa, scout]
+    access_level: restricted
+  devops:
+    agents: [kernel, nyx, warden]
+    access_level: restricted
+  management:
+    agents: [coo, ceo]
+    access_level: confidential
+
+agents:
+  kernel:
+    department: devops
+    access_level: restricted
+    recall:
+      content_types: [fact, learning, warning, sop]
+      max_results: 10
+      reranker: rrf
+      min_importance: 2
+  
+  main:
+    department: ops
+    access_level: restricted
+    recall:
+      content_types: [fact, preference]
+      max_results: 10
+      reranker: rrf
+      min_importance: 2
+  
+  coo:
+    department: management
+    access_level: confidential
+    recall:
+      content_types: [summary, decision]
+      max_results: 5
+      reranker: cross_encoder
+      min_importance: 3
+
+summarization:
+  enabled: true
+  cache_ttl_hours: 4
+  levels:
+    - level: 0
+      target: workers
+      max_entities: 20
+    - level: 1
+      target: team_leads
+      max_entities: 50
+    - level: 2
+      target: management
+      max_entities: 100
+
+llm:
+  model: gpt-4o-mini
+  temperature: 0.3
+  max_tokens: 500

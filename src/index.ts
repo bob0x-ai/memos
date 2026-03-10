@@ -9,6 +9,7 @@ import {
   graphitiHealth,
   getMetrics,
 } from './metrics/prometheus';
+import { logger } from './utils/logger';
 
 /**
  * MEMOS Plugin for OpenClaw
@@ -30,7 +31,7 @@ export function createPlugin(config: MemosConfig) {
     timeout: 30000,
   });
 
-  console.log('MEMOS plugin initialized');
+  logger.info('Plugin initialized');
 
   // Start health check interval
   const healthCheckInterval = setInterval(async () => {
@@ -38,16 +39,16 @@ export function createPlugin(config: MemosConfig) {
     graphitiHealth.set(healthy ? 1 : 0);
     
     if (!healthy) {
-      console.error('Graphiti server is unhealthy');
+      logger.error('Graphiti server is unhealthy');
     }
   }, 30000); // Check every 30 seconds
 
   // Initial health check
   client.healthCheck().then(healthy => {
     if (!healthy) {
-      console.warn('Graphiti server not available at startup');
+      logger.warn('Graphiti server not available at startup');
     }
-    console.log('MEMOS plugin ready');
+    logger.info('Plugin ready');
   });
 
   return {
@@ -63,7 +64,7 @@ export function createPlugin(config: MemosConfig) {
               return { prependContext: result.prependSystemContext };
             }
           } catch (error) {
-            console.error('Recall hook error:', error);
+            logger.error('Recall hook error', error);
           }
           return;
         });
@@ -74,7 +75,7 @@ export function createPlugin(config: MemosConfig) {
           try {
             await captureHook({}, ctx, pluginConfig, client);
           } catch (error) {
-            console.error('Capture hook error:', error);
+            logger.error('Capture hook error', error);
           }
         });
       }
@@ -112,7 +113,7 @@ export function createPlugin(config: MemosConfig) {
     },
     shutdown: () => {
       clearInterval(healthCheckInterval);
-      console.log('MEMOS plugin shutdown');
+      logger.info('Plugin shutdown');
     }
   };
 }

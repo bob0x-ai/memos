@@ -1,6 +1,9 @@
 import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { resolveDepartment } from '../utils/department';
+import { canAccess } from '../utils/access';
+import { getAgentConfig, getDepartmentConfig } from '../utils/config';
+import { logger } from '../utils/logger';
 
 /**
  * Tool: memos_recall
@@ -25,9 +28,10 @@ export async function memosRecallTool(
   error?: string;
 }> {
   try {
-    // Resolve department
-    const department = resolveDepartment(ctx.agentId, config);
+    const agentConfig = getAgentConfig(ctx.agentId);
+    const department = agentConfig?.department || resolveDepartment(ctx.agentId, config);
     if (!department) {
+      logger.warn(`memos_recall denied: no department for agent ${ctx.agentId}`);
       return {
         success: false,
         facts: [],
@@ -45,7 +49,7 @@ export async function memosRecallTool(
       facts,
     };
   } catch (error) {
-    console.error('memos_recall tool failed:', error);
+    logger.error('memos_recall tool failed', error);
     return {
       success: false,
       facts: [],
@@ -78,12 +82,35 @@ export async function memosCrossDeptTool(
   error?: string;
 }> {
   try {
-    // Validate department exists
-    if (!config.departments[params.department]) {
+    const requesterConfig = getAgentConfig(ctx.agentId);
+    if (!requesterConfig) {
+      logger.warn(`memos_cross_dept denied: no policy config for agent ${ctx.agentId}`);
+      return {
+        success: false,
+        facts: [],
+        error: `No configuration found for agent ${ctx.agentId}`,
+      };
+    }
+
+    const targetDepartmentConfig = getDepartmentConfig(params.department);
+    if (!targetDepartmentConfig) {
+      logger.warn(`memos_cross_dept denied: target department ${params.department} not found`);
       return {
         success: false,
         facts: [],
         error: `Department "${params.department}" not found`,
+      };
+    }
+
+    if (!canAccess(requesterConfig.access_level, targetDepartmentConfig.access_level)) {
+      logger.warn(
+        `memos_cross_dept denied: agent ${ctx.agentId} (${requesterConfig.access_level}) cannot access ` +
+        `${params.department} (${targetDepartmentConfig.access_level})`
+      );
+      return {
+        success: false,
+        facts: [],
+        error: `Agent ${ctx.agentId} is not allowed to access department "${params.department}"`,
       };
     }
 
@@ -97,7 +124,7 @@ export async function memosCrossDeptTool(
       facts,
     };
   } catch (error) {
-    console.error('memos_cross_dept tool failed:', error);
+    logger.error('memos_cross_dept tool failed', error);
     return {
       success: false,
       facts: [],
