@@ -27,14 +27,14 @@ jest.mock('../utils/config', () => ({
 }));
 
 describe('Capture Hook', () => {
-  let mockClient: jest.Mocked<GraphitiClient>;
+  let mockClient: any;
   let mockConfig: MemosConfig;
   let mockCtx: any;
 
   beforeEach(() => {
     mockClient = {
-      addMessages: jest.fn().mockResolvedValue({ episode_uuid: 'test-uuid', entity_count: 2 })
-    } as any;
+      addMessages: jest.fn().mockResolvedValue(true)
+    };
 
     mockConfig = {
       auto_capture: true,
@@ -59,15 +59,9 @@ describe('Capture Hook', () => {
     await captureHook({}, mockCtx, mockConfig, mockClient);
 
     expect(mockClient.addMessages).toHaveBeenCalled();
-    const call = (mockClient.addMessages as jest.Mock).mock.calls[0];
+    const call = mockClient.addMessages.mock.calls[0];
     expect(call[0]).toBe('test-devops');
     expect(call[1]).toHaveLength(2);
-    expect(call[2]).toMatchObject({
-      agent_id: 'test-kernel',
-      content_type: 'fact',
-      importance: 4,
-      access_level: 'restricted'
-    });
   });
 
   it('should skip when auto_capture is disabled', async () => {

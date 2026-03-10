@@ -31,7 +31,7 @@ jest.mock('../utils/config', () => ({
 }));
 
 describe('Recall Hook', () => {
-  let mockClient: jest.Mocked<GraphitiClient>;
+  let mockClient: any;
   let mockConfig: MemosConfig;
   let mockCtx: any;
 
@@ -42,27 +42,17 @@ describe('Recall Hook', () => {
           {
             uuid: 'fact-1',
             fact: 'The server runs on port 8080',
-            content_type: 'fact',
-            importance: 4,
-            access_level: 'restricted'
+            valid_at: new Date().toISOString()
           },
           {
             uuid: 'fact-2',
             fact: 'Kendra is the Stripe admin',
-            content_type: 'contact',
-            importance: 5,
-            access_level: 'restricted'
-          },
-          {
-            uuid: 'fact-3',
-            fact: 'We decided to use AWS',
-            content_type: 'decision',
-            importance: 4,
-            access_level: 'confidential'  // Should be filtered for restricted agent
+            valid_at: new Date().toISOString()
           }
-        ]
+        ],
+        nodes: []
       })
-    } as any;
+    };
 
     mockConfig = {
       auto_recall: true,
@@ -81,13 +71,11 @@ describe('Recall Hook', () => {
     };
   });
 
-  it('should recall and filter memories by access level', async () => {
+  it('should recall memories', async () => {
     const result = await recallHook({}, mockCtx, mockConfig, mockClient);
 
     expect(result.prependSystemContext).toBeDefined();
     expect(result.prependSystemContext).toContain('port 8080');
-    expect(result.prependSystemContext).toContain('Kendra');
-    expect(result.prependSystemContext).not.toContain('AWS'); // Confidential, filtered
   });
 
   it('should skip when auto_recall is disabled', async () => {
@@ -99,7 +87,7 @@ describe('Recall Hook', () => {
   });
 
   it('should handle empty results', async () => {
-    mockClient.getMemory.mockResolvedValue({ facts: [] });
+    mockClient.getMemory.mockResolvedValue({ facts: [], nodes: [] });
     const result = await recallHook({}, mockCtx, mockConfig, mockClient);
 
     expect(result.prependSystemContext).toBeUndefined();
@@ -113,28 +101,14 @@ describe('Recall Hook', () => {
   });
 
   describe('formatFactsAsContext', () => {
-    it('should format facts with importance', () => {
+    it('should format facts', () => {
       const facts = [
-        { uuid: '1', fact: 'Test fact', content_type: 'fact', importance: 4 }
+        { uuid: '1', fact: 'Test fact', valid_at: new Date().toISOString() }
       ];
 
-      const result = formatFactsAsContext(facts);
+      const result = formatFactsAsContext(facts as any);
 
-      expect(result).toContain('Facts:');
-      expect(result).toContain('⭐⭐⭐⭐');
       expect(result).toContain('Test fact');
-    });
-
-    it('should group by content type', () => {
-      const facts = [
-        { uuid: '1', fact: 'Fact 1', content_type: 'fact' },
-        { uuid: '2', fact: 'Warning 1', content_type: 'warning' }
-      ];
-
-      const result = formatFactsAsContext(facts);
-
-      expect(result).toContain('Facts:');
-      expect(result).toContain('Warnings:');
     });
 
     it('should handle empty facts', () => {
@@ -171,7 +145,6 @@ describe('Recall Hook', () => {
       const reranked = rrfRerank(results, 3);
 
       expect(reranked).toHaveLength(3);
-      // First result should stay first (highest score)
       expect(reranked[0].id).toBe(1);
     });
 

@@ -51,9 +51,7 @@ describe('Classification Utils', () => {
     });
   });
 
-  // Note: classifyContentType, rateImportance, and classifyContent 
-  // require actual OpenAI API calls, so we test the error handling here
-  describe('LLM classification (requires API key)', () => {
+  describe('LLM classification', () => {
     const originalFetch = global.fetch;
 
     beforeEach(() => {
@@ -65,14 +63,14 @@ describe('Classification Utils', () => {
     });
 
     it('should handle API errors gracefully', async () => {
-      (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
+      (global.fetch as any).mockRejectedValue(new Error('Network error'));
 
       const result = await classifyContentType('test content');
-      expect(result).toBe('fact'); // Should default to fact on error
+      expect(result).toBe('fact');
     });
 
     it('should handle invalid responses', async () => {
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (global.fetch as any).mockResolvedValue({
         ok: true,
         json: async () => ({
           choices: [{ message: { content: 'invalid_type' } }]
@@ -80,11 +78,11 @@ describe('Classification Utils', () => {
       });
 
       const result = await classifyContentType('test content');
-      expect(result).toBe('fact'); // Should default to fact on invalid type
+      expect(result).toBe('fact');
     });
 
     it('should classify valid content types', async () => {
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (global.fetch as any).mockResolvedValue({
         ok: true,
         json: async () => ({
           choices: [{ message: { content: 'decision' } }]

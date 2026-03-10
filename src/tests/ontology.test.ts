@@ -149,25 +149,25 @@ describe('Ontology', () => {
     const episodeId = 'episode-123';
 
     it('should create valid node properties', () => {
-      const prtest-ops = createNodeProperties(classification, agentConfig, episodeId);
+      const props = createNodeProperties(classification, agentConfig, episodeId);
 
-      expect(prtest-ops.content_type).toBe('fact');
-      expect(prtest-ops.entity_type).toBe('System');
-      expect(prtest-ops.access_level).toBe('restricted');
-      expect(prtest-ops.importance).toBe(4);
-      expect(prtest-ops.source_agent).toBe('test-agent');
-      expect(prtest-ops.source_episode).toBe('episode-123');
-      expect(prtest-ops.group_id).toBe('test-devtest-ops');
-      expect(prtest-ops.created_at).toBeInstanceOf(Date);
-      expect(prtest-ops.updated_at).toBeInstanceOf(Date);
+      expect(props.content_type).toBe('fact');
+      expect(props.entity_type).toBe('System');
+      expect(props.access_level).toBe('restricted');
+      expect(props.importance).toBe(4);
+      expect(props.source_agent).toBe('test-agent');
+      expect(props.source_episode).toBe('episode-123');
+      expect(props.group_id).toBe('test-devtest-ops');
+      expect(props.created_at).toBeInstanceOf(Date);
+      expect(props.updated_at).toBeInstanceOf(Date);
     });
 
     it('should handle missing entity_type', () => {
       const noEntity = { ...classification, entity_type: undefined };
-      const prtest-ops = createNodeProperties(noEntity, agentConfig, episodeId);
+      const props = createNodeProperties(noEntity, agentConfig, episodeId);
 
-      expect(prtest-ops.entity_type).toBeUndefined();
-      expect(prtest-ops.content_type).toBe('fact');
+      expect(props.entity_type).toBeUndefined();
+      expect(props.content_type).toBe('fact');
     });
   });
 });

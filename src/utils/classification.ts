@@ -62,7 +62,9 @@ async function callLLM(prompt: string, content: string): Promise<string> {
     throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
   }
 
-  const data = await response.json();
+  const data = await response.json() as {
+    choices: [{ message: { content: string } }];
+  };
   return data.choices[0].message.content.trim().toLowerCase();
 }
 
