@@ -64,15 +64,15 @@ describe('Access Utils', () => {
 
   describe('getDepartmentForAgent', () => {
     const departments = {
-      ops: { agents: ['main', 'mother'] },
-      devops: { agents: ['kernel', 'nyx'] },
-      management: { agents: ['coo', 'ceo'] }
+      test-ops: { agents: ['test-main', 'mother'] },
+      test-devtest-ops: { agents: ['test-kernel', 'nyx'] },
+      management: { agents: ['test-coo', 'ceo'] }
     };
 
     it('should find department for existing agent', () => {
-      expect(getDepartmentForAgent('main', departments)).toBe('ops');
-      expect(getDepartmentForAgent('kernel', departments)).toBe('devops');
-      expect(getDepartmentForAgent('coo', departments)).toBe('management');
+      expect(getDepartmentForAgent('test-main', departments)).toBe('test-ops');
+      expect(getDepartmentForAgent('test-kernel', departments)).toBe('test-devtest-ops');
+      expect(getDepartmentForAgent('test-coo', departments)).toBe('management');
     });
 
     it('should return null for unknown agent', () => {
@@ -80,7 +80,7 @@ describe('Access Utils', () => {
     });
 
     it('should return null for empty departments', () => {
-      expect(getDepartmentForAgent('main', {})).toBeNull();
+      expect(getDepartmentForAgent('test-main', {})).toBeNull();
     });
   });
 });

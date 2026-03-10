@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'memos.config.yaml');
+const TEST_CONFIG_PATH = path.join(__dirname, '..', 'config', 'memos.test.yaml');
 
 let configCache: MemosConfig | null = null;
 
@@ -11,14 +12,23 @@ export function loadConfig(): MemosConfig {
     return configCache;
   }
 
+  // Use test config in test environment
+  const configPath = process.env.NODE_ENV === 'test' ? TEST_CONFIG_PATH : CONFIG_PATH;
+  
   try {
-    const content = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    const content = fs.readFileSync(configPath, 'utf-8');
     // Simple YAML parsing - in production use a proper YAML parser
     const config = parseSimpleYaml(content) as MemosConfig;
     configCache = config;
+    
+    // In test mode, ensure all departments and agents are prefixed
+    if (process.env.NODE_ENV === 'test' && process.env.MEMOS_TEST_GROUP) {
+      config.name = `${config.name}-test-${process.env.MEMOS_TEST_GROUP}`;
+    }
+    
     return config;
   } catch (error) {
-    console.warn('Failed to load config file, using defaults:', error);
+    console.warn(`Failed to load config from ${configPath}, using defaults:`, error);
     return getDefaultConfig();
   }
 }

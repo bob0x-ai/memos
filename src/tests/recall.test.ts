@@ -6,7 +6,7 @@ import { MemosConfig } from '../src/config';
 jest.mock('../src/utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
     access_level: 'restricted',
-    department: 'devops',
+    department: 'test-devtest-ops',
     recall: {
       content_types: ['fact', 'learning', 'warning', 'sop'],
       max_results: 10,
@@ -16,9 +16,9 @@ jest.mock('../src/utils/config', () => ({
   }),
   loadConfig: jest.fn().mockReturnValue({
     agents: {
-      kernel: {
+      test-kernel: {
         access_level: 'restricted',
-        department: 'devops',
+        department: 'test-devtest-ops',
         recall: {
           content_types: ['fact', 'learning', 'warning', 'sop'],
           max_results: 10,
@@ -68,12 +68,12 @@ describe('Recall Hook', () => {
       auto_recall: true,
       recall_limit: 5,
       departments: {
-        devops: { agents: ['kernel'] }
+        test-devtest-ops: { agents: ['test-kernel'] }
       }
     } as any;
 
     mockCtx = {
-      agentId: 'kernel',
+      agentId: 'test-kernel',
       messages: [
         { role: 'system', content: 'You are a helpful assistant' },
         { role: 'user', content: 'How do I access the server?' }

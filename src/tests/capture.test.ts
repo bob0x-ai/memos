@@ -14,7 +14,7 @@ jest.mock('../src/utils/classification', () => ({
 jest.mock('../src/utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
     access_level: 'restricted',
-    department: 'devops'
+    department: 'test-devtest-ops'
   }),
   getDepartmentConfig: jest.fn(),
   loadConfig: jest.fn().mockReturnValue({
@@ -40,12 +40,12 @@ describe('Capture Hook', () => {
       auto_capture: true,
       rate_limit_retries: 3,
       departments: {
-        devops: { agents: ['kernel', 'nyx'] }
+        test-devtest-ops: { agents: ['test-kernel', 'nyx'] }
       }
     } as any;
 
     mockCtx = {
-      agentId: 'kernel',
+      agentId: 'test-kernel',
       messages: [
         { role: 'user', content: 'How do I deploy the app?' },
         { role: 'assistant', content: 'Run docker-compose up -d' }
@@ -60,10 +60,10 @@ describe('Capture Hook', () => {
 
     expect(mockClient.addMessages).toHaveBeenCalled();
     const call = (mockClient.addMessages as jest.Mock).mock.calls[0];
-    expect(call[0]).toBe('devops');
+    expect(call[0]).toBe('test-devtest-ops');
     expect(call[1]).toHaveLength(2);
     expect(call[2]).toMatchObject({
-      agent_id: 'kernel',
+      agent_id: 'test-kernel',
       content_type: 'fact',
       importance: 4,
       access_level: 'restricted'
