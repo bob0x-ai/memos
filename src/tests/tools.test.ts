@@ -3,7 +3,8 @@ import { memosRecallTool, memosCrossDeptTool } from '../tools/recall';
 
 jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn(),
-  getDepartmentConfig: jest.fn()
+  getDepartmentConfig: jest.fn(),
+  getAllDepartments: jest.fn().mockReturnValue(['ops', 'devops'])
 }));
 
 describe('Recall Tools', () => {
@@ -11,8 +12,7 @@ describe('Recall Tools', () => {
   const mockConfig: any = {
     departments: {
       ops: ['main'],
-      devops: ['kernel'],
-      management: ['coo']
+      devops: ['kernel']
     }
   };
 
@@ -31,7 +31,8 @@ describe('Recall Tools', () => {
         content_types: ['fact'],
         max_results: 10,
         reranker: 'rrf',
-        min_importance: 1
+        min_importance: 1,
+        department_scope: 'own'
       }
     });
 
@@ -55,16 +56,14 @@ describe('Recall Tools', () => {
         content_types: ['fact'],
         max_results: 10,
         reranker: 'rrf',
-        min_importance: 1
+        min_importance: 1,
+        department_scope: 'own'
       }
     });
-    getDepartmentConfig.mockReturnValue({
-      agents: ['coo'],
-      access_level: 'confidential'
-    });
+    getDepartmentConfig.mockReturnValue({});
 
     const result = await memosCrossDeptTool(
-      { department: 'management', query: 'budget' },
+      { department: 'devops', query: 'budget' },
       { agentId: 'main' },
       mockConfig,
       mockClient
@@ -78,19 +77,17 @@ describe('Recall Tools', () => {
   it('memosCrossDeptTool should allow accessible departments', async () => {
     const { getAgentConfig, getDepartmentConfig } = require('../utils/config');
     getAgentConfig.mockReturnValue({
-      department: 'management',
+      department: 'ops',
       access_level: 'confidential',
       recall: {
         content_types: ['fact'],
         max_results: 10,
         reranker: 'rrf',
-        min_importance: 1
+        min_importance: 1,
+        department_scope: 'all'
       }
     });
-    getDepartmentConfig.mockReturnValue({
-      agents: ['kernel'],
-      access_level: 'restricted'
-    });
+    getDepartmentConfig.mockReturnValue({});
 
     const result = await memosCrossDeptTool(
       { department: 'devops', query: 'deploy' },

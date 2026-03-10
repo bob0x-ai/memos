@@ -39,7 +39,16 @@ export async function captureHook(
     return;
   }
 
+  if (!agentConfig.capture.enabled) {
+    logger.info(`Capture disabled by policy for agent ${ctx.agentId} (role: ${agentConfig.role})`);
+    return;
+  }
+
   const department = agentConfig.department;
+  if (!department) {
+    logger.info(`No department assigned for agent ${ctx.agentId}; skipping capture`);
+    return;
+  }
 
   // Get the last user-assistant exchange
   const { lastUser, lastAssistant } = getLastExchange(ctx.messages);

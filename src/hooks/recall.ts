@@ -1,6 +1,6 @@
 import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { getAgentConfig, loadConfig } from '../utils/config';
+import { getAgentConfig, getAllDepartments, loadConfig } from '../utils/config';
 import { getAccessFilter } from '../ontology';
 import { logger } from '../utils/logger';
 
@@ -309,6 +309,19 @@ export async function recallHook(
   const department = agentConfig.department;
   const recallLimit = Math.min(config.recall_limit, agentConfig.recall.max_results);
 
+  const allDepartments = getAllDepartments();
+  const departmentsToQuery =
+    agentConfig.access_level === 'confidential' ||
+    agentConfig.recall.department_scope === 'all' ||
+    !department
+      ? allDepartments
+      : [department];
+
+  if (departmentsToQuery.length === 0) {
+    logger.warn(`No departments available for recall (agent: ${ctx.agentId})`);
+    return {};
+  }
+
   // Build access filter (Phase 7: permission scoping)
   const allowedAccessLevels = getAccessFilter(agentConfig.access_level);
   const allowedContentTypes = agentConfig.recall.content_types;
@@ -333,20 +346,34 @@ export async function recallHook(
       role_type: m.role as 'user' | 'assistant',
     }));
 
-    // Get memory from Graphiti with filters (Phase 7)
-    const memory = await client.getMemory(
-      department,
-      graphitiMessages,
-      recallLimit * 2, // Get extra for filtering
-      {
-        access_levels: allowedAccessLevels,
-        content_types: allowedContentTypes,
-        min_importance: minImportance
-      }
+    const memoryByDepartment = await Promise.allSettled(
+      departmentsToQuery.map(async dept => ({
+        department: dept,
+        memory: await client.getMemory(
+          dept,
+          graphitiMessages,
+          recallLimit * 2,
+          {
+            access_levels: allowedAccessLevels,
+            content_types: allowedContentTypes,
+            min_importance: minImportance
+          }
+        )
+      }))
     );
 
+    const allFacts: any[] = [];
+    for (const result of memoryByDepartment) {
+      if (result.status === 'fulfilled') {
+        const { department: sourceDepartment, memory } = result.value;
+        allFacts.push(...memory.facts.map((fact: any) => ({ ...fact, _department: sourceDepartment })));
+      } else {
+        logger.warn('Recall failed for one department; continuing with remaining departments', result.reason);
+      }
+    }
+
     // Filter results by access level and content type (Phase 7)
-    const filteredFacts = memory.facts.filter((fact: any) => {
+    const filteredFacts = allFacts.filter((fact: any) => {
       const accessLevel = fact.access_level || 'public';
       const contentType = fact.content_type || 'fact';
       const importance = typeof fact.importance === 'number' ? fact.importance : 3;
@@ -358,17 +385,32 @@ export async function recallHook(
       );
     });
 
-    logger.info(`Recall retrieved ${memory.facts.length} facts, filtered to ${filteredFacts.length} for ${ctx.agentId}`);
+    // Deduplicate facts that may appear across multiple queried departments.
+    const dedupedFacts: any[] = [];
+    const seen = new Set<string>();
+    for (const fact of filteredFacts) {
+      const key = fact.uuid || `${fact._department || 'unknown'}:${fact.fact}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      dedupedFacts.push(fact);
+    }
+
+    logger.info(
+      `Recall queried ${departmentsToQuery.length} department(s), retrieved ${allFacts.length} facts, ` +
+      `filtered to ${dedupedFacts.length} for ${ctx.agentId}`
+    );
 
     // Rerank results (Phase 7)
     const rerankedFacts = agentConfig.recall.reranker === 'cross_encoder'
       ? await crossEncoderRerank(
-        filteredFacts,
+        dedupedFacts,
         query,
         recallLimit,
         loadConfig().llm.model
       )
-      : rrfRerank(filteredFacts, recallLimit);
+      : rrfRerank(dedupedFacts, recallLimit);
 
     // Format results into context
     const context = formatFactsAsContext(rerankedFacts);

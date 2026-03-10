@@ -64,10 +64,6 @@ Add to `~/.openclaw/openclaw.json`:
         "enabled": true,
         "config": {
           "graphiti_url": "http://localhost:8000",
-          "departments": {
-            "ops": ["main", "mother", "masa", "scout"],
-            "devops": ["kernel", "nyx", "warden"]
-          },
           "auto_capture": true,
           "auto_recall": true,
           "recall_limit": 10
@@ -83,24 +79,30 @@ Add to `~/.openclaw/openclaw.json`:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `graphiti_url` | string | `http://localhost:8000` | Graphiti server URL |
-| `departments` | object | **required** | Map of department names to agent arrays |
 | `auto_capture` | boolean | `true` | Capture episodes after agent responses |
 | `auto_recall` | boolean | `true` | Recall facts before agent prompts |
 | `recall_limit` | number | `10` | Maximum facts to recall |
 | `sop_search_enabled` | boolean | `false` | Enable SOP document search (Phase 2) |
 
-## Department Configuration
+## Policy Configuration
 
-Agents are assigned to departments for memory scoping:
+Department, role, and agent policy is configured in `config/memos.config.yaml`:
 
-```json
-{
-  "ops": ["main", "mother", "masa", "scout"],
-  "devops": ["kernel", "nyx", "warden"]
-}
+```yaml
+departments:
+  ops: {}
+  devops: {}
+
+roles:
+  worker: ...
+  management: ...
+  contractor: ...
+
+agents:
+  main:
+    role: management
+    department: ops
 ```
-
-Each department creates a separate namespace in the knowledge graph.
 
 ## Agent Tools
 

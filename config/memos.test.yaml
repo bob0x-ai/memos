@@ -1,8 +1,5 @@
 name: memos-test
-version: 1.0.0
-
-# TEST CONFIGURATION - Isolated from production
-# Uses separate departments to prevent test data pollution
+version: 2.0.0
 
 ontology:
   entity_types:
@@ -12,7 +9,7 @@ ontology:
     - Error
     - Document
     - Organization
-  
+
   content_types:
     - fact
     - decision
@@ -22,55 +19,78 @@ ontology:
     - sop
     - warning
     - contact
-  
+
   access_levels:
     - public
     - restricted
     - confidential
 
-# Test departments - completely separate from production
 departments:
-  test-ops:
-    agents: [test-main, test-mother]
-    access_level: restricted
-  test-devops:
-    agents: [test-kernel, test-nyx]
-    access_level: restricted
-  test-management:
-    agents: [test-coo, test-ceo]
-    access_level: confidential
+  test-ops: {}
+  test-devops: {}
 
-agents:
-  test-kernel:
-    department: test-devops
+roles:
+  worker:
     access_level: restricted
+    capture:
+      enabled: true
     recall:
       content_types: [fact, learning, warning, sop]
       max_results: 5
       reranker: rrf
       min_importance: 1
-  
-  test-main:
-    department: test-ops
-    access_level: restricted
-    recall:
-      content_types: [fact, preference]
-      max_results: 5
-      reranker: rrf
-      min_importance: 1
-  
-  test-coo:
-    department: test-management
+      department_scope: own
+
+  management:
     access_level: confidential
+    capture:
+      enabled: true
     recall:
-      content_types: [summary, decision]
+      content_types: [summary]
       max_results: 3
       reranker: cross_encoder
       min_importance: 1
+      department_scope: all
+
+  contractor:
+    access_level: public
+    capture:
+      enabled: false
+    recall:
+      content_types: [summary, fact]
+      max_results: 2
+      reranker: rrf
+      min_importance: 1
+      department_scope: all
+
+agents:
+  test-main:
+    role: management
+    department: test-ops
+
+  test-mother:
+    role: worker
+    department: test-ops
+
+  test-kernel:
+    role: worker
+    department: test-devops
+
+  test-nyx:
+    role: worker
+    department: test-devops
+
+unknown_agent_policy:
+  role: contractor
+  department: null
+
+overrides:
+  agents: {}
 
 summarization:
-  enabled: false  # Disabled for tests
+  enabled: false
   cache_ttl_hours: 1
+  levels: []
 
 llm:
   model: gpt-4o-mini

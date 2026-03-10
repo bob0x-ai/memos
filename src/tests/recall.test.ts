@@ -5,15 +5,21 @@ import { MemosConfig } from '../config';
 
 jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
+    role: 'worker',
     access_level: 'restricted',
     department: 'test-devops',
+    capture: {
+      enabled: true
+    },
     recall: {
       content_types: ['fact', 'learning', 'warning', 'sop'],
       max_results: 10,
       reranker: 'rrf',
-      min_importance: 2
+      min_importance: 2,
+      department_scope: 'own'
     }
   }),
+  getAllDepartments: jest.fn().mockReturnValue(['test-ops', 'test-devops']),
   loadConfig: jest.fn().mockReturnValue({
     llm: {
       model: 'gpt-4o-mini'
@@ -89,13 +95,18 @@ describe('Recall Hook', () => {
   it('should use cross_encoder reranker for management agents', async () => {
     const { getAgentConfig } = require('../utils/config');
     getAgentConfig.mockReturnValue({
+      role: 'management',
       access_level: 'confidential',
       department: 'test-management',
+      capture: {
+        enabled: true
+      },
       recall: {
         content_types: ['fact', 'learning', 'warning', 'sop'],
         max_results: 10,
         reranker: 'cross_encoder',
-        min_importance: 2
+        min_importance: 2,
+        department_scope: 'all'
       }
     });
 

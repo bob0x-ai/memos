@@ -7,7 +7,8 @@ import { MemosConfig } from '../config';
  * @returns Department name or null if not found
  */
 export function resolveDepartment(agentId: string, config: MemosConfig): string | null {
-  for (const [dept, agents] of Object.entries(config.departments)) {
+  const departments = config.departments || {};
+  for (const [dept, agents] of Object.entries(departments)) {
     if (agents.includes(agentId)) {
       return dept;
     }
@@ -22,7 +23,8 @@ export function resolveDepartment(agentId: string, config: MemosConfig): string 
  * @returns Array of agent IDs or empty array
  */
 export function getDepartmentAgents(department: string, config: MemosConfig): string[] {
-  return config.departments[department] || [];
+  const departments = config.departments || {};
+  return departments[department] || [];
 }
 
 /**
@@ -32,7 +34,8 @@ export function getDepartmentAgents(department: string, config: MemosConfig): st
  * @returns True if agent is found
  */
 export function hasAgent(agentId: string, config: MemosConfig): boolean {
-  for (const agents of Object.values(config.departments)) {
+  const departments = config.departments || {};
+  for (const agents of Object.values(departments)) {
     if (agents.includes(agentId)) {
       return true;
     }

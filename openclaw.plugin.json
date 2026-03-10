@@ -12,15 +12,6 @@
         "default": "http://localhost:8000",
         "description": "URL of the Graphiti server"
       },
-      "departments": {
-        "type": "object",
-        "description": "Map of department names to agent IDs",
-        "additionalProperties": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "List of agent IDs in this department"
-        }
-      },
       "sop_search_enabled": {
         "type": "boolean",
         "default": false,
@@ -51,7 +42,6 @@
         "default": 3,
         "description": "Number of retries when OpenAI rate limits (429 errors)"
       }
-    },
-    "required": ["departments"]
+    }
   }
 }

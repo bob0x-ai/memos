@@ -13,8 +13,19 @@ jest.mock('../utils/classification', () => ({
 
 jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
+    role: 'worker',
     access_level: 'restricted',
-    department: 'test-devops'
+    department: 'test-devops',
+    capture: {
+      enabled: true
+    },
+    recall: {
+      content_types: ['fact'],
+      max_results: 10,
+      reranker: 'rrf',
+      min_importance: 1,
+      department_scope: 'own'
+    }
   }),
   getDepartmentConfig: jest.fn(),
   loadConfig: jest.fn().mockReturnValue({
@@ -34,8 +45,19 @@ describe('Capture Hook', () => {
   beforeEach(() => {
     const { getAgentConfig } = require('../utils/config');
     getAgentConfig.mockReturnValue({
+      role: 'worker',
       access_level: 'restricted',
-      department: 'test-devops'
+      department: 'test-devops',
+      capture: {
+        enabled: true
+      },
+      recall: {
+        content_types: ['fact'],
+        max_results: 10,
+        reranker: 'rrf',
+        min_importance: 1,
+        department_scope: 'own'
+      }
     });
 
     mockClient = {

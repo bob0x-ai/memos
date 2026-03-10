@@ -1,8 +1,6 @@
 import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { resolveDepartment } from '../utils/department';
-import { canAccess } from '../utils/access';
-import { getAgentConfig, getDepartmentConfig } from '../utils/config';
+import { getAgentConfig, getAllDepartments, getDepartmentConfig } from '../utils/config';
 import { logger } from '../utils/logger';
 
 /**
@@ -26,11 +24,26 @@ export async function memosRecallTool(
   success: boolean;
   facts: Array<{ uuid: string; fact: string; valid_at?: string; invalid_at?: string }>;
   error?: string;
-}> {
+  }> {
   try {
     const agentConfig = getAgentConfig(ctx.agentId);
-    const department = agentConfig?.department || resolveDepartment(ctx.agentId, config);
-    if (!department) {
+    if (!agentConfig) {
+      logger.warn(`memos_recall denied: no policy for agent ${ctx.agentId}`);
+      return {
+        success: false,
+        facts: [],
+        error: `No policy found for agent ${ctx.agentId}`,
+      };
+    }
+
+    const departmentsToQuery =
+      agentConfig.access_level === 'confidential' ||
+      agentConfig.recall.department_scope === 'all' ||
+      !agentConfig.department
+        ? getAllDepartments()
+        : [agentConfig.department];
+
+    if (departmentsToQuery.length === 0) {
       logger.warn(`memos_recall denied: no department for agent ${ctx.agentId}`);
       return {
         success: false,
@@ -41,12 +54,30 @@ export async function memosRecallTool(
 
     const limit = params.limit || 10;
 
-    // Search facts
-    const facts = await client.searchFacts(department, params.query, limit);
+    const results = await Promise.all(
+      departmentsToQuery.map(async dept => ({
+        department: dept,
+        facts: await client.searchFacts(dept, params.query, limit),
+      }))
+    );
+
+    const mergedFacts = results.flatMap(result =>
+      result.facts.map(fact => ({ ...fact, source_department: result.department }))
+    );
+
+    const seen = new Set<string>();
+    const dedupedFacts = mergedFacts.filter(fact => {
+      const key = fact.uuid || `${fact.source_department}:${fact.fact}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
 
     return {
       success: true,
-      facts,
+      facts: dedupedFacts.slice(0, limit),
     };
   } catch (error) {
     logger.error('memos_recall tool failed', error);
@@ -102,10 +133,14 @@ export async function memosCrossDeptTool(
       };
     }
 
-    if (!canAccess(requesterConfig.access_level, targetDepartmentConfig.access_level)) {
+    const canReadCrossDepartment =
+      requesterConfig.access_level === 'confidential' ||
+      requesterConfig.department === params.department;
+
+    if (!canReadCrossDepartment) {
       logger.warn(
         `memos_cross_dept denied: agent ${ctx.agentId} (${requesterConfig.access_level}) cannot access ` +
-        `${params.department} (${targetDepartmentConfig.access_level})`
+        `department ${params.department}`
       );
       return {
         success: false,

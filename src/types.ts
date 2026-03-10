@@ -4,21 +4,54 @@ export interface Ontology {
   access_levels: string[];
 }
 
+export type AccessLevel = 'public' | 'restricted' | 'confidential';
+export type RerankerType = 'rrf' | 'cross_encoder';
+export type DepartmentScope = 'own' | 'all';
+
 export interface DepartmentConfig {
-  agents: string[];
-  access_level: string;
+  description?: string;
 }
 
 export interface AgentRecallConfig {
   content_types: string[];
   max_results: number;
-  reranker: 'rrf' | 'cross_encoder';
+  reranker: RerankerType;
   min_importance: number;
+  department_scope: DepartmentScope;
+}
+
+export interface CaptureConfig {
+  enabled: boolean;
+}
+
+export interface RoleConfig {
+  access_level: AccessLevel;
+  capture: CaptureConfig;
+  recall: AgentRecallConfig;
+}
+
+export interface AgentOverrides {
+  access_level?: AccessLevel;
+  department?: string | null;
+  capture?: Partial<CaptureConfig>;
+  recall?: Partial<AgentRecallConfig>;
 }
 
 export interface AgentConfig {
+  role: string;
   department: string;
-  access_level: string;
+}
+
+export interface UnknownAgentPolicy {
+  role: string;
+  department: string | null;
+}
+
+export interface AgentResolvedConfig {
+  role: string;
+  department: string | null;
+  access_level: AccessLevel;
+  capture: CaptureConfig;
   recall: AgentRecallConfig;
 }
 
@@ -45,7 +78,12 @@ export interface MemosConfig {
   version: string;
   ontology: Ontology;
   departments: Record<string, DepartmentConfig>;
+  roles: Record<string, RoleConfig>;
   agents: Record<string, AgentConfig>;
+  unknown_agent_policy: UnknownAgentPolicy;
+  overrides?: {
+    agents?: Record<string, AgentOverrides>;
+  };
   summarization: SummarizationConfig;
   llm: LLMConfig;
 }

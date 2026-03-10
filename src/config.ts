@@ -4,10 +4,10 @@
 export interface MemosConfig {
   /** URL of the Graphiti server */
   graphiti_url: string;
-  
-  /** Department to agent mappings */
-  departments: Record<string, string[]>;
-  
+
+  /** Deprecated: department policy now lives in config/memos.config.yaml */
+  departments?: Record<string, string[]>;
+
   /** Enable SOP document search */
   sop_search_enabled: boolean;
   
@@ -52,15 +52,15 @@ export function validateConfig(config: unknown): asserts config is MemosConfig {
 
   const c = config as Record<string, unknown>;
 
-  // Check departments
-  if (!c.departments || typeof c.departments !== 'object') {
-    throw new Error('MEMOS configuration requires "departments" object');
-  }
-
-  // Validate each department has an array of agent IDs
-  for (const [dept, agents] of Object.entries(c.departments)) {
-    if (!Array.isArray(agents)) {
-      throw new Error(`Department "${dept}" must be an array of agent IDs`);
+  // Validate deprecated departments shape when provided
+  if (c.departments !== undefined) {
+    if (typeof c.departments !== 'object' || c.departments === null) {
+      throw new Error('departments must be an object when provided');
+    }
+    for (const [dept, agents] of Object.entries(c.departments as Record<string, unknown>)) {
+      if (!Array.isArray(agents)) {
+        throw new Error(`Department "${dept}" must be an array of agent IDs`);
+      }
     }
   }
 

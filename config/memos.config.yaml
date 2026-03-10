@@ -1,5 +1,5 @@
 name: memos
-version: 1.0.0
+version: 2.0.0
 
 ontology:
   entity_types:
@@ -9,7 +9,7 @@ ontology:
     - Error
     - Document
     - Organization
-  
+
   content_types:
     - fact
     - decision
@@ -19,50 +19,85 @@ ontology:
     - sop
     - warning
     - contact
-  
+
   access_levels:
     - public
     - restricted
     - confidential
 
 departments:
-  ops:
-    agents: [main, mother, masa, scout]
-    access_level: restricted
-  devops:
-    agents: [kernel, nyx, warden]
-    access_level: restricted
-  management:
-    agents: [coo, ceo]
-    access_level: confidential
+  ops: {}
+  devops: {}
 
-agents:
-  kernel:
-    department: devops
+roles:
+  worker:
     access_level: restricted
+    capture:
+      enabled: true
     recall:
       content_types: [fact, learning, warning, sop]
       max_results: 10
       reranker: rrf
       min_importance: 2
-  
-  main:
-    department: ops
-    access_level: restricted
-    recall:
-      content_types: [fact, preference]
-      max_results: 10
-      reranker: rrf
-      min_importance: 2
-  
-  coo:
-    department: management
+      department_scope: own
+
+  management:
     access_level: confidential
+    capture:
+      enabled: true
     recall:
-      content_types: [summary, decision]
+      content_types: [summary]
       max_results: 5
       reranker: cross_encoder
       min_importance: 3
+      department_scope: all
+
+  contractor:
+    access_level: public
+    capture:
+      enabled: false
+    recall:
+      content_types: [summary, fact]
+      max_results: 3
+      reranker: rrf
+      min_importance: 3
+      department_scope: all
+
+agents:
+  main:
+    role: management
+    department: ops
+
+  mother:
+    role: worker
+    department: ops
+
+  masa:
+    role: worker
+    department: ops
+
+  scout:
+    role: worker
+    department: ops
+
+  kernel:
+    role: worker
+    department: devops
+
+  nyx:
+    role: worker
+    department: devops
+
+  warden:
+    role: worker
+    department: devops
+
+unknown_agent_policy:
+  role: contractor
+  department: null
+
+overrides:
+  agents: {}
 
 summarization:
   enabled: true
