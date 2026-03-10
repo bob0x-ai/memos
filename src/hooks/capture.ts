@@ -2,6 +2,10 @@ import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { resolveDepartment } from '../utils/department';
 import { isWorthRemembering, getLastExchange } from '../utils/filter';
+import { getAgentConfig, getDepartmentConfig, loadConfig } from '../utils/config';
+import { classifyContent } from '../utils/classification';
+import { getAccessFilter, createNodeProperties, validateContentType, validateImportance } from '../ontology';
+import { ClassificationResult } from '../types';
 
 /**
  * Hook called at agent_end to capture episodes
@@ -34,6 +38,13 @@ export async function captureHook(
     return;
   }
 
+  // Get agent configuration for access level
+  const agentConfig = getAgentConfig(ctx.agentId);
+  if (!agentConfig) {
+    console.warn(`No configuration found for agent ${ctx.agentId}`);
+    return;
+  }
+
   // Get the last user-assistant exchange
   const { lastUser, lastAssistant } = getLastExchange(ctx.messages);
   
@@ -48,7 +59,32 @@ export async function captureHook(
     return;
   }
 
-  // Build messages for Graphiti
+  // Build content for classification
+  const content = `${lastUser}\nAssistant: ${lastAssistant}`;
+
+  // Classify content (Phase 7: content type + importance)
+  console.debug('Classifying content...');
+  let classification: ClassificationResult;
+  try {
+    classification = await classifyContent(content);
+  } catch (error) {
+    console.warn('Content classification failed, using defaults:', error);
+    classification = { content_type: 'fact', importance: 3 };
+  }
+
+  // Validate classification results
+  if (!validateContentType(classification.content_type)) {
+    console.warn(`Invalid content type: ${classification.content_type}, defaulting to 'fact'`);
+    classification.content_type = 'fact';
+  }
+
+  if (!validateImportance(classification.importance)) {
+    console.warn(`Invalid importance: ${classification.importance}, defaulting to 3`);
+    classification.importance = 3;
+  }
+
+  console.debug(`Classified as ${classification.content_type} (importance: ${classification.importance})`);
+
   const timestamp = new Date().toISOString();
   const messages = [
     {
@@ -65,14 +101,28 @@ export async function captureHook(
     }
   ];
 
+  // Build metadata for Graphiti (Phase 7: enriched metadata)
+  const metadata = {
+    agent_id: ctx.agentId,
+    user_id: ctx.userId,
+    session_id: ctx.sessionId,
+    department: department,
+    access_level: agentConfig.access_level,
+    content_type: classification.content_type,
+    importance: classification.importance,
+    created_at: timestamp,
+    update_communities: true  // Enable community detection
+  };
+
   try {
-    // Send to Graphiti with retry logic
+    // Send to Graphiti with retry logic and metadata
     await retryWithBackoff(
-      () => client.addMessages(department, messages),
+      () => client.addMessages(department, messages, metadata),
       config.rate_limit_retries
     );
 
-    console.log(`Successfully captured episode for agent ${ctx.agentId} in department ${department}`);
+    console.log(`Successfully captured episode for agent ${ctx.agentId} in department ${department} ` +
+                `(${classification.content_type}, importance: ${classification.importance})`);
   } catch (error) {
     console.error('Failed to capture episode:', error);
     // Log but don't throw - we don't want to break the agent run
