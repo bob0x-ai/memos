@@ -1,6 +1,7 @@
 import { MemosConfig } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
+import { logger } from './logger';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'memos.config.yaml');
@@ -30,7 +31,7 @@ export function loadConfig(): MemosConfig {
     
     return config;
   } catch (error) {
-    console.warn(`Failed to load config from ${configPath}, using defaults:`, error);
+    logger.warn(`Failed to load config from ${configPath}, using defaults`, error);
     return getDefaultConfig();
   }
 }

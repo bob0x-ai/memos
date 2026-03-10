@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { logger } from './utils/logger';
 
 export interface EpisodeMetadata {
   agent_id: string;
@@ -189,7 +190,7 @@ export async function retryWithBackoff<T>(
       // Check if it's a rate limit error (429)
       if (axiosError.response?.status === 429 && attempt < retries - 1) {
         const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
-        console.warn(
+        logger.warn(
           `Rate limited by Graphiti, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`
         );
         await sleep(delay);
@@ -198,7 +199,7 @@ export async function retryWithBackoff<T>(
 
       // Check if Graphiti server is unavailable
       if (axiosError.code === 'ECONNREFUSED' || axiosError.code === 'ENOTFOUND') {
-        console.error('Graphiti server unavailable');
+        logger.error('Graphiti server unavailable');
         throw new Error('Graphiti server unavailable');
       }
 

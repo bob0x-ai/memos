@@ -2,6 +2,7 @@ import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { getAgentConfig, loadConfig } from '../utils/config';
 import { getAccessFilter } from '../ontology';
+import { logger } from '../utils/logger';
 
 /**
  * Format search results into context for the agent
@@ -186,7 +187,7 @@ export async function crossEncoderRerank(
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    console.warn('OPENAI_API_KEY not set, falling back to local RRF reranking');
+    logger.warn('OPENAI_API_KEY not set, falling back to local RRF reranking');
     return rrfRerank(results, limit);
   }
 
@@ -270,7 +271,7 @@ export async function crossEncoderRerank(
 
     return ordered.slice(0, limit);
   } catch (error) {
-    console.warn('Cross-encoder reranker failed, falling back to local RRF:', error);
+    logger.warn('Cross-encoder reranker failed, falling back to local RRF', error);
     return rrfRerank(results, limit);
   }
 }
@@ -294,13 +295,14 @@ export async function recallHook(
 ): Promise<{ prependSystemContext?: string }> {
   // Check if auto-recall is enabled
   if (!config.auto_recall) {
+    logger.debug(`Auto-recall disabled for agent ${ctx.agentId}`);
     return {};
   }
 
   // Get agent configuration (Phase 7: access control)
   const agentConfig = getAgentConfig(ctx.agentId);
   if (!agentConfig) {
-    console.warn(`No configuration found for agent ${ctx.agentId}`);
+    logger.warn(`No configuration found for agent ${ctx.agentId}`);
     return {};
   }
 
@@ -312,14 +314,15 @@ export async function recallHook(
   const allowedContentTypes = agentConfig.recall.content_types;
   const minImportance = agentConfig.recall.min_importance;
 
-  console.debug(`Recalling for agent ${ctx.agentId} (access: ${agentConfig.access_level})`);
-  console.debug(`  Allowed access levels: ${allowedAccessLevels.join(', ')}`);
-  console.debug(`  Allowed content types: ${allowedContentTypes.join(', ')}`);
-  console.debug(`  Min importance: ${minImportance}`);
+  logger.debug(`Recalling for agent ${ctx.agentId} (access: ${agentConfig.access_level})`);
+  logger.debug(`Allowed access levels: ${allowedAccessLevels.join(', ')}`);
+  logger.debug(`Allowed content types: ${allowedContentTypes.join(', ')}`);
+  logger.debug(`Minimum importance: ${minImportance}`);
 
   // Build query from recent messages
   const query = buildQueryFromMessages(ctx.messages);
   if (!query) {
+    logger.debug(`No user query extracted for agent ${ctx.agentId}, skipping recall`);
     return {};
   }
 
@@ -355,7 +358,7 @@ export async function recallHook(
       );
     });
 
-    console.debug(`Retrieved ${memory.facts.length} facts, filtered to ${filteredFacts.length}`);
+    logger.info(`Recall retrieved ${memory.facts.length} facts, filtered to ${filteredFacts.length} for ${ctx.agentId}`);
 
     // Rerank results (Phase 7)
     const rerankedFacts = agentConfig.recall.reranker === 'cross_encoder'
@@ -376,7 +379,7 @@ export async function recallHook(
 
     return {};
   } catch (error) {
-    console.error('Failed to recall from memory:', error);
+    logger.error('Failed to recall from memory', error);
     // Return empty context on error - don't break the agent run
     return {};
   }

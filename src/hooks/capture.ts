@@ -5,6 +5,7 @@ import { getAgentConfig } from '../utils/config';
 import { classifyContent } from '../utils/classification';
 import { validateContentType, validateImportance } from '../ontology';
 import { ClassificationResult } from '../types';
+import { logger } from '../utils/logger';
 
 /**
  * Hook called at agent_end to capture episodes
@@ -27,13 +28,14 @@ export async function captureHook(
 ): Promise<void> {
   // Check if auto-capture is enabled
   if (!config.auto_capture) {
+    logger.debug(`Auto-capture disabled for agent ${ctx.agentId}`);
     return;
   }
 
   // Get agent configuration for access level
   const agentConfig = getAgentConfig(ctx.agentId);
   if (!agentConfig) {
-    console.warn(`No configuration found for agent ${ctx.agentId}`);
+    logger.warn(`No configuration found for agent ${ctx.agentId}`);
     return;
   }
 
@@ -43,13 +45,13 @@ export async function captureHook(
   const { lastUser, lastAssistant } = getLastExchange(ctx.messages);
   
   if (!lastUser || !lastAssistant) {
-    console.warn('Could not find complete user-assistant exchange');
+    logger.warn('Could not find complete user-assistant exchange');
     return;
   }
 
   // Check if exchange is worth remembering
   if (!isWorthRemembering(lastUser, lastAssistant)) {
-    console.log('Exchange filtered as trivial, not capturing');
+    logger.info(`Exchange filtered as trivial, not capturing for agent ${ctx.agentId}`);
     return;
   }
 
@@ -57,27 +59,27 @@ export async function captureHook(
   const content = `${lastUser}\nAssistant: ${lastAssistant}`;
 
   // Classify content (Phase 7: content type + importance)
-  console.debug('Classifying content...');
+  logger.debug('Classifying captured content');
   let classification: ClassificationResult;
   try {
     classification = await classifyContent(content);
   } catch (error) {
-    console.warn('Content classification failed, using defaults:', error);
+    logger.warn('Content classification failed, using defaults', error);
     classification = { content_type: 'fact', importance: 3 };
   }
 
   // Validate classification results
   if (!validateContentType(classification.content_type)) {
-    console.warn(`Invalid content type: ${classification.content_type}, defaulting to 'fact'`);
+    logger.warn(`Invalid content type: ${classification.content_type}, defaulting to 'fact'`);
     classification.content_type = 'fact';
   }
 
   if (!validateImportance(classification.importance)) {
-    console.warn(`Invalid importance: ${classification.importance}, defaulting to 3`);
+    logger.warn(`Invalid importance: ${classification.importance}, defaulting to 3`);
     classification.importance = 3;
   }
 
-  console.debug(`Classified as ${classification.content_type} (importance: ${classification.importance})`);
+  logger.debug(`Classified as ${classification.content_type} (importance: ${classification.importance})`);
 
   const timestamp = new Date().toISOString();
   const messages = [
@@ -115,10 +117,10 @@ export async function captureHook(
       config.rate_limit_retries
     );
 
-    console.log(`Successfully captured episode for agent ${ctx.agentId} in department ${department} ` +
-                `(${classification.content_type}, importance: ${classification.importance})`);
+    logger.info(`Captured episode for agent ${ctx.agentId} in department ${department} ` +
+      `(${classification.content_type}, importance: ${classification.importance})`);
   } catch (error) {
-    console.error('Failed to capture episode:', error);
+    logger.error('Failed to capture episode', error);
     // Log but don't throw - we don't want to break the agent run
   }
 }

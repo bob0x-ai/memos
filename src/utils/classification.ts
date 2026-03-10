@@ -1,4 +1,5 @@
 import { ClassificationResult } from '../types';
+import { logger } from './logger';
 
 const MODEL = 'gpt-4o-mini';
 const VALID_CONTENT_TYPES = ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact'];
@@ -178,7 +179,7 @@ export async function classifyContent(content: string): Promise<ClassificationRe
     }
     return parsed;
   } catch (error) {
-    console.warn('Classification API unavailable, using heuristic fallback:', error);
+    logger.warn('Classification API unavailable, using heuristic fallback', error);
     return classifyContentHeuristic(content);
   };
 }
