@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { recallHook, formatFactsAsContext, buildQueryFromMessages, rrfRerank } from '../src/hooks/recall';
-import { GraphitiClient } from '../src/graphiti-client';
-import { MemosConfig } from '../src/config';
+import { recallHook, formatFactsAsContext, buildQueryFromMessages, rrfRerank } from '../hooks/recall';
+import { GraphitiClient } from '../graphiti-client';
+import { MemosConfig } from '../config';
 
-jest.mock('../src/utils/config', () => ({
+jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
     access_level: 'restricted',
-    department: 'test-devtest-ops',
+    department: 'test-devops',
     recall: {
       content_types: ['fact', 'learning', 'warning', 'sop'],
       max_results: 10,
@@ -16,9 +16,9 @@ jest.mock('../src/utils/config', () => ({
   }),
   loadConfig: jest.fn().mockReturnValue({
     agents: {
-      test-kernel: {
+      'test-kernel': {
         access_level: 'restricted',
-        department: 'test-devtest-ops',
+        department: 'test-devops',
         recall: {
           content_types: ['fact', 'learning', 'warning', 'sop'],
           max_results: 10,
@@ -68,7 +68,7 @@ describe('Recall Hook', () => {
       auto_recall: true,
       recall_limit: 5,
       departments: {
-        test-devtest-ops: { agents: ['test-kernel'] }
+        'test-devops': { agents: ['test-kernel'] }
       }
     } as any;
 

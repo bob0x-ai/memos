@@ -4,7 +4,7 @@ import {
   rateImportance,
   classifyContent,
   classifyContentHeuristic
-} from '../src/utils/classification';
+} from '../utils/classification';
 
 describe('Classification Utils', () => {
   describe('classifyContentHeuristic', () => {

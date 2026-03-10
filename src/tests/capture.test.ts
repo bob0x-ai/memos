@@ -1,20 +1,20 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { captureHook } from '../src/hooks/capture';
-import { GraphitiClient } from '../src/graphiti-client';
-import { MemosConfig } from '../src/config';
+import { captureHook } from '../hooks/capture';
+import { GraphitiClient } from '../graphiti-client';
+import { MemosConfig } from '../config';
 
 // Mock the classification module
-jest.mock('../src/utils/classification', () => ({
+jest.mock('../utils/classification', () => ({
   classifyContent: jest.fn().mockResolvedValue({
     content_type: 'fact',
     importance: 4
   })
 }));
 
-jest.mock('../src/utils/config', () => ({
+jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
     access_level: 'restricted',
-    department: 'test-devtest-ops'
+    department: 'test-devops'
   }),
   getDepartmentConfig: jest.fn(),
   loadConfig: jest.fn().mockReturnValue({
@@ -40,7 +40,7 @@ describe('Capture Hook', () => {
       auto_capture: true,
       rate_limit_retries: 3,
       departments: {
-        test-devtest-ops: { agents: ['test-kernel', 'nyx'] }
+        'test-devops': { agents: ['test-kernel', 'test-nyx'] }
       }
     } as any;
 
@@ -60,7 +60,7 @@ describe('Capture Hook', () => {
 
     expect(mockClient.addMessages).toHaveBeenCalled();
     const call = (mockClient.addMessages as jest.Mock).mock.calls[0];
-    expect(call[0]).toBe('test-devtest-ops');
+    expect(call[0]).toBe('test-devops');
     expect(call[1]).toHaveLength(2);
     expect(call[2]).toMatchObject({
       agent_id: 'test-kernel',
@@ -79,7 +79,7 @@ describe('Capture Hook', () => {
 
   it('should skip unknown agents', async () => {
     mockCtx.agentId = 'unknown-agent';
-    const { getAgentConfig } = require('../src/utils/config');
+    const { getAgentConfig } = require('../utils/config');
     getAgentConfig.mockReturnValue(null);
 
     await captureHook({}, mockCtx, mockConfig, mockClient);

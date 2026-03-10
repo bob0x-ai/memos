@@ -10,8 +10,8 @@ import {
   validateAccessLevel,
   validateImportance,
   createNodeProperties
-} from '../src/ontology';
-import { ClassificationResult } from '../src/types';
+} from '../ontology';
+import { ClassificationResult } from '../types';
 
 describe('Ontology', () => {
   describe('Constants', () => {

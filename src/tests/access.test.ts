@@ -3,7 +3,7 @@ import {
   getAccessFilter,
   canAccess,
   getDepartmentForAgent
-} from '../src/utils/access';
+} from '../utils/access';
 
 describe('Access Utils', () => {
   describe('getAccessFilter', () => {
@@ -64,15 +64,15 @@ describe('Access Utils', () => {
 
   describe('getDepartmentForAgent', () => {
     const departments = {
-      test-ops: { agents: ['test-main', 'mother'] },
-      test-devtest-ops: { agents: ['test-kernel', 'nyx'] },
-      management: { agents: ['test-coo', 'ceo'] }
+      'test-ops': { agents: ['test-main', 'test-mother'] },
+      'test-devops': { agents: ['test-kernel', 'test-nyx'] },
+      'test-management': { agents: ['test-coo', 'test-ceo'] }
     };
 
     it('should find department for existing agent', () => {
       expect(getDepartmentForAgent('test-main', departments)).toBe('test-ops');
-      expect(getDepartmentForAgent('test-kernel', departments)).toBe('test-devtest-ops');
-      expect(getDepartmentForAgent('test-coo', departments)).toBe('management');
+      expect(getDepartmentForAgent('test-kernel', departments)).toBe('test-devops');
+      expect(getDepartmentForAgent('test-coo', departments)).toBe('test-management');
     });
 
     it('should return null for unknown agent', () => {
