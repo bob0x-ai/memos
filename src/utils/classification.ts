@@ -136,7 +136,8 @@ export function classifyContentHeuristic(content: string): ClassificationResult 
   }
   
   // Check for contact patterns
-  if (/\b(is the|contact|email|phone|reach)\s+(admin|owner|lead)\b/.test(contentLower)) {
+  if (/\b(is the|contact|email|phone|reach)\s+\w+\s+(admin|owner|lead)\b/.test(contentLower) ||
+      /\b(is the|contact|email|phone|reach)\s+(admin|owner|lead)\b/.test(contentLower)) {
     return { content_type: 'contact', importance: 4 };
   }
   
