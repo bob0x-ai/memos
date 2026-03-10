@@ -1,10 +1,9 @@
 import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { resolveDepartment } from '../utils/department';
 import { isWorthRemembering, getLastExchange } from '../utils/filter';
-import { getAgentConfig, getDepartmentConfig, loadConfig } from '../utils/config';
+import { getAgentConfig } from '../utils/config';
 import { classifyContent } from '../utils/classification';
-import { getAccessFilter, createNodeProperties, validateContentType, validateImportance } from '../ontology';
+import { validateContentType, validateImportance } from '../ontology';
 import { ClassificationResult } from '../types';
 
 /**
@@ -31,19 +30,14 @@ export async function captureHook(
     return;
   }
 
-  // Resolve department from agent_id
-  const department = resolveDepartment(ctx.agentId, config);
-  if (!department) {
-    console.warn(`No department found for agent ${ctx.agentId}`);
-    return;
-  }
-
   // Get agent configuration for access level
   const agentConfig = getAgentConfig(ctx.agentId);
   if (!agentConfig) {
     console.warn(`No configuration found for agent ${ctx.agentId}`);
     return;
   }
+
+  const department = agentConfig.department;
 
   // Get the last user-assistant exchange
   const { lastUser, lastAssistant } = getLastExchange(ctx.messages);

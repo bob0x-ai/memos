@@ -1,9 +1,12 @@
-import { MemosConfig } from './types';
+import { MemosConfig } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const CONFIG_PATH = path.join(__dirname, '..', 'config', 'memos.config.yaml');
-const TEST_CONFIG_PATH = path.join(__dirname, '..', 'config', 'memos.test.yaml');
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+const CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'memos.config.yaml');
+const TEST_CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'memos.test.yaml');
+
+const yaml = require('js-yaml') as { load: (input: string) => unknown };
 
 let configCache: MemosConfig | null = null;
 
@@ -13,12 +16,11 @@ export function loadConfig(): MemosConfig {
   }
 
   // Use test config in test environment
-  const configPath = process.env.NODE_ENV === 'test' ? TEST_CONFIG_PATH : CONFIG_PATH;
+  const configPath = resolveConfigPath();
   
   try {
     const content = fs.readFileSync(configPath, 'utf-8');
-    // Simple YAML parsing - in production use a proper YAML parser
-    const config = parseSimpleYaml(content) as MemosConfig;
+    const config = parseYaml(content);
     configCache = config;
     
     // In test mode, ensure all departments and agents are prefixed
@@ -33,73 +35,19 @@ export function loadConfig(): MemosConfig {
   }
 }
 
-function parseSimpleYaml(yaml: string): Record<string, any> {
-  const result: Record<string, any> = {};
-  const lines = yaml.split('\n');
-  let currentSection: string | null = null;
-  let currentSubsection: string | null = null;
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    
-    const indent = line.length - line.trimStart().length;
-    
-    if (indent === 0 && trimmed.includes(':')) {
-      const [key, value] = trimmed.split(':').map(s => s.trim());
-      if (value) {
-        result[key] = value;
-      } else {
-        currentSection = key;
-        result[currentSection] = {};
-      }
-    } else if (indent === 2 && currentSection) {
-      if (trimmed.startsWith('-')) {
-        // Array item
-        const item = trimmed.substring(1).trim();
-        if (!Array.isArray(result[currentSection])) {
-          result[currentSection] = [];
-        }
-        result[currentSection].push(item);
-      } else if (trimmed.includes(':')) {
-        const [key, value] = trimmed.split(':').map(s => s.trim());
-        if (value) {
-          result[currentSection][key] = value;
-        } else {
-          currentSubsection = key;
-          result[currentSection][currentSubsection] = {};
-        }
-      }
-    } else if (indent === 4 && currentSection && currentSubsection) {
-      if (trimmed.startsWith('-')) {
-        const item = trimmed.substring(1).trim();
-        if (!Array.isArray(result[currentSection][currentSubsection])) {
-          result[currentSection][currentSubsection] = [];
-        }
-        result[currentSection][currentSubsection].push(item);
-      } else if (trimmed.includes(':')) {
-        const [key, value] = trimmed.split(':').map(s => s.trim());
-        if (value) {
-          result[currentSection][currentSubsection][key] = value;
-        } else {
-          result[currentSection][currentSubsection][key] = {};
-        }
-      }
-    } else if (indent === 6) {
-      // Deep nesting for agent recall config
-      if (trimmed.includes(':')) {
-        const [key, value] = trimmed.split(':').map(s => s.trim());
-        if (currentSection && currentSubsection) {
-          const parent = result[currentSection][currentSubsection];
-          if (typeof parent === 'object') {
-            parent[key] = value || {};
-          }
-        }
-      }
-    }
+function resolveConfigPath(): string {
+  if (process.env.MEMOS_CONFIG_PATH) {
+    return path.resolve(process.env.MEMOS_CONFIG_PATH);
   }
-  
-  return result;
+  return process.env.NODE_ENV === 'test' ? TEST_CONFIG_PATH : CONFIG_PATH;
+}
+
+function parseYaml(content: string): MemosConfig {
+  const parsed = yaml.load(content);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid config: expected top-level object');
+  }
+  return parsed as MemosConfig;
 }
 
 function getDefaultConfig(): MemosConfig {

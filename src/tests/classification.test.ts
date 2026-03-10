@@ -92,5 +92,19 @@ describe('Classification Utils', () => {
       const result = await classifyContentType('We decided to migrate');
       expect(result).toBe('decision');
     });
+
+    it('should classify content and importance with a single API call', async () => {
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"content_type":"learning","importance":4}' } }]
+        })
+      });
+
+      const result = await classifyContent('We learned that retries fix transient issues');
+
+      expect(result).toEqual({ content_type: 'learning', importance: 4 });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
   });
 });

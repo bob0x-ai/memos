@@ -1,6 +1,8 @@
 import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { resolveDepartment } from '../utils/department';
+import { canAccess } from '../utils/access';
+import { getAgentConfig, getDepartmentConfig } from '../utils/config';
 
 /**
  * Tool: memos_recall
@@ -25,8 +27,8 @@ export async function memosRecallTool(
   error?: string;
 }> {
   try {
-    // Resolve department
-    const department = resolveDepartment(ctx.agentId, config);
+    const agentConfig = getAgentConfig(ctx.agentId);
+    const department = agentConfig?.department || resolveDepartment(ctx.agentId, config);
     if (!department) {
       return {
         success: false,
@@ -78,12 +80,29 @@ export async function memosCrossDeptTool(
   error?: string;
 }> {
   try {
-    // Validate department exists
-    if (!config.departments[params.department]) {
+    const requesterConfig = getAgentConfig(ctx.agentId);
+    if (!requesterConfig) {
+      return {
+        success: false,
+        facts: [],
+        error: `No configuration found for agent ${ctx.agentId}`,
+      };
+    }
+
+    const targetDepartmentConfig = getDepartmentConfig(params.department);
+    if (!targetDepartmentConfig) {
       return {
         success: false,
         facts: [],
         error: `Department "${params.department}" not found`,
+      };
+    }
+
+    if (!canAccess(requesterConfig.access_level, targetDepartmentConfig.access_level)) {
+      return {
+        success: false,
+        facts: [],
+        error: `Agent ${ctx.agentId} is not allowed to access department "${params.department}"`,
       };
     }
 

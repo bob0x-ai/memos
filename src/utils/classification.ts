@@ -1,113 +1,185 @@
 import { ClassificationResult } from '../types';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL = 'gpt-4o-mini';
+const VALID_CONTENT_TYPES = ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact'];
 
-const CONTENT_TYPE_PROMPT = `Classify this conversation excerpt into ONE of these categories:
-- fact: Objective statement about the world (e.g., "The server is down", "Kendra works on payments")
-- decision: A choice that was made or will be made (e.g., "We decided to use Stripe", "Let's migrate to AWS")
-- preference: What someone likes, wants, or prefers (e.g., "I prefer dark mode", "Kendra likes Adidas shoes")
-- learning: Lesson from success or failure (e.g., "We learned that retry logic fixes this", "The root cause was timeout")
-- summary: Overview or summary statement
-- sop: Standard procedure or how-to (e.g., "To deploy, run these commands", "The process is...")
-- warning: Risk, issue, or caution (e.g., "Don't do this or it will break", "Watch out for...")
-- contact: Information about a person or organization (e.g., "Kendra is the Stripe admin", "Contact sales@...")
+const CLASSIFICATION_PROMPT = `Classify this conversation excerpt.
 
-Rules:
-1. Choose the SINGLE best match
-2. If multiple apply, pick the most specific one
-3. Facts about decisions should be 'decision', not 'fact'
-4. Facts about preferences should be 'preference', not 'fact'
+Choose one content_type:
+- fact
+- decision
+- preference
+- learning
+- summary
+- sop
+- warning
+- contact
 
-Excerpt: {content}
+Set importance as an integer 1-5:
+1=trivial, 2=low, 3=medium, 4=high, 5=critical.
 
-Respond with ONLY the category name (lowercase, no quotes):`;
+Return ONLY strict JSON with this exact shape:
+{"content_type":"<one_of_types>","importance":<1_to_5>}
 
-const IMPORTANCE_PROMPT = `Rate the importance of this information on a scale of 1-5:
+Excerpt: {content}`;
 
-1 = Trivial: Pleasantries, acknowledgments, confirmations (e.g., "thanks", "ok", "got it")
-2 = Low: Minor details, tangential info (e.g., "the button is blue", "I had coffee")
-3 = Medium: Useful context, background info (e.g., "we discussed this yesterday", "the API returns JSON")
-4 = High: Important decisions, facts, or learnings (e.g., "we decided to migrate", "the fix was to restart")
-5 = Critical: Must remember, crucial for operations (e.g., "never do X", "Kendra owns Stripe", "production password")
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-Rules:
-- Facts about system architecture, contacts, or critical processes are 4-5
-- Personal preferences are usually 2-3
-- Acknowledgments and filler are 1
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
 
-Excerpt: {content}
+function getCodeBlockJson(raw: string): string | null {
+  const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return match?.[1] || null;
+}
 
-Respond with ONLY a number 1-5:`;
+function parseClassificationResponse(raw: string): ClassificationResult | null {
+  const trimmed = raw.trim();
+  const lowered = trimmed.toLowerCase();
 
-async function callLLM(prompt: string, content: string): Promise<string> {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: 'You are a precise classifier. Respond only with the requested value, no explanation.' },
-        { role: 'user', content: prompt.replace('{content}', content) }
-      ],
-      temperature: 0.1,
-      max_tokens: 50
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+  // Backward compatibility: handle legacy single-token responses.
+  if (VALID_CONTENT_TYPES.includes(lowered)) {
+    return { content_type: lowered, importance: 3 };
   }
 
-  const data = await response.json() as {
-    choices: [{ message: { content: string } }];
-  };
-  return data.choices[0].message.content.trim().toLowerCase();
+  const parsedImportance = parseInt(lowered, 10);
+  if (parsedImportance >= 1 && parsedImportance <= 5) {
+    return { content_type: 'fact', importance: parsedImportance };
+  }
+
+  const candidates: string[] = [trimmed];
+  const codeBlock = getCodeBlockJson(trimmed);
+  if (codeBlock) {
+    candidates.push(codeBlock);
+  }
+  const objectMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (objectMatch) {
+    candidates.push(objectMatch[0]);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, unknown>;
+      const contentType = String(parsed.content_type ?? parsed.type ?? '').toLowerCase();
+      const importance = Number(parsed.importance ?? parsed.score);
+      if (VALID_CONTENT_TYPES.includes(contentType) && importance >= 1 && importance <= 5) {
+        return {
+          content_type: contentType,
+          importance: Math.round(importance),
+        };
+      }
+    } catch {
+      // Ignore parse errors and keep trying fallback shapes.
+    }
+  }
+
+  return null;
+}
+
+async function callLLM(prompt: string, content: string): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY is not set');
+  }
+
+  const timeoutMs = Number(process.env.MEMOS_CLASSIFICATION_TIMEOUT_MS || 8000);
+  const retries = Number(process.env.MEMOS_CLASSIFICATION_RETRIES || 2);
+
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a precise classifier. Return only requested output, with no extra text.'
+            },
+            { role: 'user', content: prompt.replace('{content}', content) }
+          ],
+          temperature: 0,
+          max_tokens: 100
+        })
+      });
+
+      if (!response.ok) {
+        if (isRetryableStatus(response.status) && attempt < retries) {
+          const delayMs = 400 * Math.pow(2, attempt);
+          await sleep(delayMs);
+          continue;
+        }
+        throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json() as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const output = data.choices?.[0]?.message?.content?.trim();
+      if (!output) {
+        throw new Error('LLM API returned empty classification output');
+      }
+      return output;
+    } catch (error) {
+      lastError = error;
+      const isAbort = error instanceof Error && error.name === 'AbortError';
+      if (attempt < retries && isAbort) {
+        const delayMs = 400 * Math.pow(2, attempt);
+        await sleep(delayMs);
+        continue;
+      }
+      if (attempt < retries && !(error instanceof Error && /LLM API error: 4\d\d/.test(error.message))) {
+        const delayMs = 400 * Math.pow(2, attempt);
+        await sleep(delayMs);
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Classification failed');
 }
 
 export async function classifyContentType(content: string): Promise<string> {
-  try {
-    const result = await callLLM(CONTENT_TYPE_PROMPT, content);
-    // Validate result
-    const validTypes = ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact'];
-    if (validTypes.includes(result)) {
-      return result;
-    }
-    console.warn(`Invalid content type returned: ${result}, defaulting to 'fact'`);
-    return 'fact';
-  } catch (error) {
-    console.error('Error classifying content type:', error);
-    return 'fact'; // Default fallback
-  }
+  const result = await classifyContent(content);
+  return result.content_type;
 }
 
 export async function rateImportance(content: string): Promise<number> {
-  try {
-    const result = await callLLM(IMPORTANCE_PROMPT, content);
-    const importance = parseInt(result, 10);
-    if (importance >= 1 && importance <= 5) {
-      return importance;
-    }
-    console.warn(`Invalid importance returned: ${result}, defaulting to 3`);
-    return 3;
-  } catch (error) {
-    console.error('Error rating importance:', error);
-    return 3; // Default fallback
-  }
+  const result = await classifyContent(content);
+  return result.importance;
 }
 
 export async function classifyContent(content: string): Promise<ClassificationResult> {
-  const [contentType, importance] = await Promise.all([
-    classifyContentType(content),
-    rateImportance(content)
-  ]);
+  if (!process.env.OPENAI_API_KEY) {
+    return classifyContentHeuristic(content);
+  }
 
-  return {
-    content_type: contentType,
-    importance
+  try {
+    const raw = await callLLM(CLASSIFICATION_PROMPT, content);
+    const parsed = parseClassificationResponse(raw);
+    if (!parsed) {
+      throw new Error(`Invalid classification output: ${raw}`);
+    }
+    return parsed;
+  } catch (error) {
+    console.warn('Classification API unavailable, using heuristic fallback:', error);
+    return classifyContentHeuristic(content);
   };
 }
 

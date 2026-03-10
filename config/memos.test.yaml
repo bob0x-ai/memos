@@ -65,7 +65,7 @@ agents:
     recall:
       content_types: [summary, decision]
       max_results: 3
-      reranker: rrf
+      reranker: cross_encoder
       min_importance: 1
 
 summarization:

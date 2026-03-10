@@ -5,10 +5,10 @@ import { MemosConfig } from '../config';
 
 // Mock the classification module
 jest.mock('../utils/classification', () => ({
-  classifyContent: jest.fn().mockResolvedValue({
+  classifyContent: jest.fn(async () => ({
     content_type: 'fact',
     importance: 4
-  })
+  }))
 }));
 
 jest.mock('../utils/config', () => ({
@@ -32,23 +32,29 @@ describe('Capture Hook', () => {
   let mockCtx: any;
 
   beforeEach(() => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      access_level: 'restricted',
+      department: 'test-devops'
+    });
+
     mockClient = {
-      addMessages: jest.fn().mockResolvedValue(true)
+      addMessages: jest.fn(async () => true)
     };
 
     mockConfig = {
       auto_capture: true,
       rate_limit_retries: 3,
       departments: {
-        'test-devops': { agents: ['test-kernel', 'test-nyx'] }
+        'test-devops': ['test-kernel', 'test-nyx']
       }
     } as any;
 
     mockCtx = {
       agentId: 'test-kernel',
       messages: [
-        { role: 'user', content: 'How do I deploy the app?' },
-        { role: 'assistant', content: 'Run docker-compose up -d' }
+        { role: 'user', content: 'How do I deploy the app to production safely with docker compose?' },
+        { role: 'assistant', content: 'Use docker-compose up -d, then run health checks and verify logs.' }
       ],
       userId: 'user-123',
       sessionId: 'session-456'
