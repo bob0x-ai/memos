@@ -1,6 +1,7 @@
 import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { getAgentConfig, getAllDepartments, getDepartmentConfig } from '../utils/config';
+import { drillDownCalls, drillDownDuration, drillDownErrors } from '../metrics/prometheus';
 import { logger } from '../utils/logger';
 import { getSummaryDrillDown } from '../utils/summarization';
 
@@ -193,10 +194,19 @@ export async function memosDrillDownTool(
   facts: Array<{ uuid?: string; fact: string; content_type?: string; importance?: number; department?: string }>;
   error?: string;
 }> {
+  const startTime = Date.now();
+  const finish = (agentId: string, outcome: string): void => {
+    drillDownCalls.labels(agentId, outcome).inc();
+    drillDownDuration.labels(agentId, outcome).observe((Date.now() - startTime) / 1000);
+  };
+
   try {
+    const agentId = ctx.agentId || 'unknown';
     const requesterConfig = getAgentConfig(ctx.agentId);
     if (!requesterConfig) {
       logger.warn(`memos_drill_down denied: no policy config for agent ${ctx.agentId}`);
+      drillDownErrors.labels(agentId, 'no_policy').inc();
+      finish(agentId, 'denied_no_policy');
       return {
         success: false,
         summary_id: params.summary_id,
@@ -209,6 +219,8 @@ export async function memosDrillDownTool(
       logger.warn(
         `memos_drill_down denied: agent ${ctx.agentId} (${requesterConfig.access_level}) lacks confidential access`
       );
+      drillDownErrors.labels(agentId, 'access_denied').inc();
+      finish(agentId, 'denied_access');
       return {
         success: false,
         summary_id: params.summary_id,
@@ -219,7 +231,9 @@ export async function memosDrillDownTool(
 
     const limit = params.limit || 10;
     const drillDown = getSummaryDrillDown(params.summary_id, limit);
-    if (!drillDown) {
+    if (drillDown.status === 'not_found') {
+      drillDownErrors.labels(agentId, 'not_found').inc();
+      finish(agentId, 'not_found');
       return {
         success: false,
         summary_id: params.summary_id,
@@ -228,11 +242,25 @@ export async function memosDrillDownTool(
       };
     }
 
+    if (drillDown.status === 'expired') {
+      drillDownErrors.labels(agentId, 'expired').inc();
+      finish(agentId, 'expired');
+      return {
+        success: false,
+        summary_id: params.summary_id,
+        facts: [],
+        error:
+          `Summary "${params.summary_id}" is expired (expired at ` +
+          `${new Date(drillDown.data.expiresAtMs).toISOString()})`,
+      };
+    }
+
+    finish(agentId, 'success');
     return {
       success: true,
       summary_id: params.summary_id,
-      summary: drillDown.summary,
-      facts: drillDown.facts.map(fact => ({
+      summary: drillDown.data.summary,
+      facts: drillDown.data.facts.map(fact => ({
         uuid: fact.uuid,
         fact: fact.fact,
         content_type: fact.content_type,
@@ -241,6 +269,9 @@ export async function memosDrillDownTool(
       })),
     };
   } catch (error) {
+    const agentId = ctx.agentId || 'unknown';
+    drillDownErrors.labels(agentId, 'internal').inc();
+    finish(agentId, 'error');
     logger.error('memos_drill_down tool failed', error);
     return {
       success: false,

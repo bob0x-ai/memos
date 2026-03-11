@@ -38,6 +38,19 @@ export interface SummaryResult {
   provider: 'cache' | 'llm' | 'heuristic';
 }
 
+export interface SummaryDrillDownData {
+  summaryId: string;
+  summary: string;
+  facts: SummaryCandidateFact[];
+  createdAtMs: number;
+  expiresAtMs: number;
+}
+
+export type SummaryDrillDownLookupResult =
+  | { status: 'ok'; data: SummaryDrillDownData }
+  | { status: 'expired'; data: SummaryDrillDownData }
+  | { status: 'not_found' };
+
 const summaryCache = new Map<string, SummaryCacheEntry>();
 const summaryById = new Map<string, SummaryCacheEntry>();
 
@@ -236,24 +249,30 @@ export function formatSummaryAsContext(summaryId: string, summary: string, sourc
   return `## Executive Memory Summary\n\nSummary ID: ${summaryId}\n\n${summary}${sourceLine}\n`;
 }
 
-export function getSummaryDrillDown(summaryId: string, limit: number = 10): {
-  summaryId: string;
-  summary: string;
-  facts: SummaryCandidateFact[];
-  createdAtMs: number;
-  expiresAtMs: number;
-} | null {
+export function getSummaryDrillDown(
+  summaryId: string,
+  limit: number = 10
+): SummaryDrillDownLookupResult {
   const entry = summaryById.get(summaryId);
   if (!entry) {
-    return null;
+    return { status: 'not_found' };
   }
 
-  return {
+  const data: SummaryDrillDownData = {
     summaryId: entry.summaryId,
     summary: entry.summary,
     facts: entry.sourceFacts.slice(0, Math.max(1, limit)),
     createdAtMs: entry.createdAtMs,
     expiresAtMs: entry.expiresAtMs,
+  };
+
+  if (entry.expiresAtMs <= Date.now()) {
+    return { status: 'expired', data };
+  }
+
+  return {
+    status: 'ok',
+    data,
   };
 }
 

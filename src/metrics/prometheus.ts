@@ -121,6 +121,26 @@ export const summaryModeSelections = new Counter({
   labelNames: ['mode'],
 });
 
+// Drill-down metrics
+export const drillDownCalls = new Counter({
+  name: 'memos_drill_down_calls_total',
+  help: 'Total number of summary drill-down calls',
+  labelNames: ['agent_id', 'outcome'],
+});
+
+export const drillDownErrors = new Counter({
+  name: 'memos_drill_down_errors_total',
+  help: 'Total number of summary drill-down errors',
+  labelNames: ['agent_id', 'error_type'],
+});
+
+export const drillDownDuration = new Histogram({
+  name: 'memos_drill_down_duration_seconds',
+  help: 'Duration of summary drill-down requests',
+  labelNames: ['agent_id', 'outcome'],
+  buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1, 2],
+});
+
 /**
  * Get all metrics in Prometheus format
  * @returns Metrics string

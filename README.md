@@ -140,6 +140,10 @@ Retrieve detail facts behind an executive summary:
 }
 ```
 
+Notes:
+- Returns an explicit error when a summary is expired vs never found.
+- Requires confidential/management access.
+
 ## How It Works
 
 ### Capture Flow
@@ -183,6 +187,10 @@ Available at `/metrics`:
 - `memos_recall_results_count` - Results per recall
 - `memos_graphiti_health` - Graphiti server health
 - `memos_cross_dept_queries_total` - Cross-dept queries
+- `memos_summary_requests_total` - Summary requests
+- `memos_summary_cache_hits_total` / `memos_summary_cache_misses_total` - Summary cache behavior
+- `memos_summary_generation_duration_seconds` - Summary generation latency
+- `memos_drill_down_calls_total` / `memos_drill_down_errors_total` - Drill-down usage and errors
 
 ## Development
 

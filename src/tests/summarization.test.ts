@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from '@jest/globals';
 import {
   clearSummaryCache,
   formatSummaryAsContext,
+  getSummaryDrillDown,
   getOrGenerateSummary,
 } from '../utils/summarization';
 
@@ -71,5 +72,34 @@ describe('Summarization Utils', () => {
     expect(context).toContain('Executive Memory Summary');
     expect(context).toContain('sum_test123');
     expect(context).toContain('fact-1');
+  });
+
+  it('should return expired status for drill-down after ttl', async () => {
+    const baseNow = Date.now();
+    const originalNow = Date.now;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Date as any).now = () => baseNow;
+
+    try {
+      const generated = await getOrGenerateSummary({
+        query: 'Show me important learnings',
+        departments: ['ops'],
+        facts: [
+          { uuid: 'f1', fact: 'Retry logic reduced errors', content_type: 'learning', importance: 4 },
+        ],
+        cacheTtlHours: 1,
+        model: 'gpt-4o-mini',
+      });
+
+      // Move time forward beyond TTL
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Date as any).now = () => baseNow + 2 * 60 * 60 * 1000;
+
+      const drillDown = getSummaryDrillDown(generated.summaryId, 5);
+      expect(drillDown.status).toBe('expired');
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Date as any).now = originalNow;
+    }
   });
 });

@@ -144,14 +144,17 @@ describe('Recall Tools', () => {
       }
     });
     getSummaryDrillDown.mockReturnValue({
-      summaryId: 'sum_abc123',
-      summary: 'Executive summary text',
-      facts: [
-        { uuid: 'f1', fact: 'Detail A', content_type: 'fact', importance: 4, _department: 'ops' },
-        { uuid: 'f2', fact: 'Detail B', content_type: 'decision', importance: 5, _department: 'devops' },
-      ],
-      createdAtMs: Date.now(),
-      expiresAtMs: Date.now() + 3600000,
+      status: 'ok',
+      data: {
+        summaryId: 'sum_abc123',
+        summary: 'Executive summary text',
+        facts: [
+          { uuid: 'f1', fact: 'Detail A', content_type: 'fact', importance: 4, _department: 'ops' },
+          { uuid: 'f2', fact: 'Detail B', content_type: 'decision', importance: 5, _department: 'devops' },
+        ],
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 3600000,
+      }
     });
 
     const result = await memosDrillDownTool(
@@ -180,7 +183,7 @@ describe('Recall Tools', () => {
         department_scope: 'all'
       }
     });
-    getSummaryDrillDown.mockReturnValue(null);
+    getSummaryDrillDown.mockReturnValue({ status: 'not_found' });
 
     const result = await memosDrillDownTool(
       { summary_id: 'sum_missing' },
@@ -191,5 +194,41 @@ describe('Recall Tools', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('not found');
+  });
+
+  it('memosDrillDownTool should distinguish expired summaries', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    const { getSummaryDrillDown } = require('../utils/summarization');
+    getAgentConfig.mockReturnValue({
+      department: 'ops',
+      access_level: 'confidential',
+      recall: {
+        content_types: ['summary'],
+        max_results: 5,
+        reranker: 'cross_encoder',
+        min_importance: 1,
+        department_scope: 'all'
+      }
+    });
+    getSummaryDrillDown.mockReturnValue({
+      status: 'expired',
+      data: {
+        summaryId: 'sum_old',
+        summary: 'Old summary',
+        facts: [],
+        createdAtMs: Date.now() - 7200000,
+        expiresAtMs: Date.now() - 1000,
+      }
+    });
+
+    const result = await memosDrillDownTool(
+      { summary_id: 'sum_old' },
+      { agentId: 'main' },
+      mockConfig,
+      mockClient
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('expired');
   });
 });
