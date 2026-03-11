@@ -188,6 +188,12 @@ npm run dev
 # Type check
 npm run typecheck
 
+# Unit/integration tests (offline-safe defaults)
+npm test -- --runInBand
+
+# Live LLM integration tests (requires real OPENAI_API_KEY)
+npm run test:llm
+
 # Lint
 npm run lint
 ```

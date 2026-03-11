@@ -8,6 +8,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:llm": "MEMOS_RUN_LLM_TESTS=true MEMOS_ENABLE_LLM_IN_TESTS=true jest src/tests/llm.integration.test.ts --runInBand",
     "test:standalone": "node tests/standalone.test.js",
     "test:e2e": "node tests/e2e.test.js",
     "lint": "eslint src/**/*.ts",
