@@ -54,8 +54,15 @@ export interface MemoryFilters {
   min_importance?: number;
 }
 
+export interface GraphitiCapabilities {
+  hasCommunityEndpoints: boolean;
+  supportsUpdateCommunitiesFlag: boolean;
+  mode: 'native_communities' | 'fallback_summaries';
+}
+
 export class GraphitiClient {
   private client: AxiosInstance;
+  private capabilitiesCache: GraphitiCapabilities | null = null;
 
   constructor(config: GraphitiClientConfig) {
     this.client = axios.create({
@@ -148,6 +155,54 @@ export class GraphitiClient {
     const response = await this.client.post('/get-memory', requestBody);
 
     return response.data || { facts: [], nodes: [] };
+  }
+
+  /**
+   * Detect Graphiti API capabilities from OpenAPI.
+   * Falls back to conservative defaults when unavailable.
+   */
+  async detectCapabilities(forceRefresh: boolean = false): Promise<GraphitiCapabilities> {
+    if (this.capabilitiesCache && !forceRefresh) {
+      return this.capabilitiesCache;
+    }
+
+    try {
+      const response = await this.client.get('/openapi.json');
+      const openapi = response.data as {
+        paths?: Record<string, unknown>;
+        components?: {
+          schemas?: Record<
+            string,
+            {
+              properties?: Record<string, unknown>;
+            }
+          >;
+        };
+      };
+
+      const pathKeys = Object.keys(openapi.paths || {});
+      const hasCommunityEndpoints = pathKeys.some(path => /community|communities/i.test(path));
+      const addMessagesSchema = openapi.components?.schemas?.AddMessagesRequest;
+      const supportsUpdateCommunitiesFlag = Boolean(
+        addMessagesSchema?.properties && 'update_communities' in addMessagesSchema.properties
+      );
+
+      this.capabilitiesCache = {
+        hasCommunityEndpoints,
+        supportsUpdateCommunitiesFlag,
+        mode: hasCommunityEndpoints ? 'native_communities' : 'fallback_summaries',
+      };
+
+      return this.capabilitiesCache;
+    } catch (error) {
+      logger.warn('Could not detect Graphiti capabilities, defaulting to fallback summaries', error);
+      this.capabilitiesCache = {
+        hasCommunityEndpoints: false,
+        supportsUpdateCommunitiesFlag: false,
+        mode: 'fallback_summaries',
+      };
+      return this.capabilitiesCache;
+    }
   }
 
   /**

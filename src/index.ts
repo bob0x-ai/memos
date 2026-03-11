@@ -48,6 +48,15 @@ export function createPlugin(config: MemosConfig) {
     if (!healthy) {
       logger.warn('Graphiti server not available at startup');
     }
+    client.detectCapabilities().then(capabilities => {
+      logger.info(
+        `Graphiti capability mode: ${capabilities.mode} ` +
+        `(community_endpoints=${capabilities.hasCommunityEndpoints}, ` +
+        `update_communities_flag=${capabilities.supportsUpdateCommunitiesFlag})`
+      );
+    }).catch(error => {
+      logger.warn('Graphiti capability detection failed', error);
+    });
     logger.info('Plugin ready');
   });
 

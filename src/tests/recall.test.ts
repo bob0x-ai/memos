@@ -21,6 +21,12 @@ jest.mock('../utils/config', () => ({
   }),
   getAllDepartments: jest.fn().mockReturnValue(['test-ops', 'test-devops']),
   loadConfig: jest.fn().mockReturnValue({
+    ontology: {
+      content_types: ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact']
+    },
+    summarization: {
+      cache_ttl_hours: 4
+    },
     llm: {
       model: 'gpt-4o-mini'
     },
@@ -47,6 +53,11 @@ describe('Recall Hook', () => {
 
   beforeEach(() => {
     mockClient = {
+      detectCapabilities: jest.fn(async () => ({
+        mode: 'fallback_summaries',
+        hasCommunityEndpoints: false,
+        supportsUpdateCommunitiesFlag: false
+      })),
       getMemory: jest.fn(async () => ({
         facts: [
           {
@@ -129,6 +140,30 @@ describe('Recall Hook', () => {
     expect(result.prependSystemContext).toBeDefined();
     expect(result.prependSystemContext!.indexOf('Kendra is the Stripe admin'))
       .toBeLessThan(result.prependSystemContext!.indexOf('The server runs on port 8080'));
+  });
+
+  it('should generate summary context for summary-only policy agents', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      role: 'management',
+      access_level: 'confidential',
+      department: 'test-ops',
+      capture: {
+        enabled: true
+      },
+      recall: {
+        content_types: ['summary'],
+        max_results: 5,
+        reranker: 'cross_encoder',
+        min_importance: 1,
+        department_scope: 'all'
+      }
+    });
+
+    const result = await recallHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.detectCapabilities).toHaveBeenCalled();
+    expect(result.prependSystemContext).toContain('Executive Memory Summary');
   });
 
   it('should skip when auto_recall is disabled', async () => {

@@ -3,6 +3,7 @@ import { MemosConfig } from '../config';
 import { getAgentConfig, getAllDepartments, loadConfig } from '../utils/config';
 import { getAccessFilter } from '../ontology';
 import { logger } from '../utils/logger';
+import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
 
 /**
  * Format search results into context for the agent
@@ -305,6 +306,7 @@ export async function recallHook(
     logger.warn(`No configuration found for agent ${ctx.agentId}`);
     return {};
   }
+  const runtimeConfig = loadConfig();
 
   const department = agentConfig.department;
   const recallLimit = Math.min(config.recall_limit, agentConfig.recall.max_results);
@@ -325,11 +327,18 @@ export async function recallHook(
   // Build access filter (Phase 7: permission scoping)
   const allowedAccessLevels = getAccessFilter(agentConfig.access_level);
   const allowedContentTypes = agentConfig.recall.content_types;
+  const summaryOnlyMode =
+    allowedContentTypes.length === 1 && allowedContentTypes[0] === 'summary';
+  const retrievalContentTypes = summaryOnlyMode
+    ? runtimeConfig.ontology.content_types.filter(type => type !== 'summary')
+    : allowedContentTypes;
   const minImportance = agentConfig.recall.min_importance;
 
   logger.debug(`Recalling for agent ${ctx.agentId} (access: ${agentConfig.access_level})`);
   logger.debug(`Allowed access levels: ${allowedAccessLevels.join(', ')}`);
+  logger.debug(`Recall mode: ${summaryOnlyMode ? 'summary-only' : 'detailed-facts'}`);
   logger.debug(`Allowed content types: ${allowedContentTypes.join(', ')}`);
+  logger.debug(`Retrieval content types: ${retrievalContentTypes.join(', ')}`);
   logger.debug(`Minimum importance: ${minImportance}`);
 
   // Build query from recent messages
@@ -355,7 +364,7 @@ export async function recallHook(
           recallLimit * 2,
           {
             access_levels: allowedAccessLevels,
-            content_types: allowedContentTypes,
+            content_types: retrievalContentTypes,
             min_importance: minImportance
           }
         )
@@ -380,7 +389,7 @@ export async function recallHook(
 
       return (
         allowedAccessLevels.includes(accessLevel) &&
-        allowedContentTypes.includes(contentType) &&
+        retrievalContentTypes.includes(contentType) &&
         importance >= minImportance
       );
     });
@@ -402,13 +411,39 @@ export async function recallHook(
       `filtered to ${dedupedFacts.length} for ${ctx.agentId}`
     );
 
+    if (summaryOnlyMode) {
+      const capabilities = await client.detectCapabilities();
+      if (capabilities.mode === 'native_communities') {
+        logger.info('Graphiti community endpoints detected; using plugin-side summary fallback until native integration is added');
+      } else {
+        logger.info('Using plugin-side summary fallback chain (no native community endpoints detected)');
+      }
+
+      const summaryCandidates = rrfRerank(dedupedFacts, Math.max(recallLimit * 2, 6));
+      if (summaryCandidates.length === 0) {
+        logger.debug(`No facts available for summary generation for ${ctx.agentId}`);
+        return {};
+      }
+      const summary = await getOrGenerateSummary({
+        query,
+        departments: departmentsToQuery,
+        facts: summaryCandidates,
+        cacheTtlHours: runtimeConfig.summarization.cache_ttl_hours,
+        model: runtimeConfig.llm.model,
+      });
+
+      return {
+        prependSystemContext: formatSummaryAsContext(summary.summary, summary.sourceFactIds),
+      };
+    }
+
     // Rerank results (Phase 7)
     const rerankedFacts = agentConfig.recall.reranker === 'cross_encoder'
       ? await crossEncoderRerank(
         dedupedFacts,
         query,
         recallLimit,
-        loadConfig().llm.model
+        runtimeConfig.llm.model
       )
       : rrfRerank(dedupedFacts, recallLimit);
 
