@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { memosRecallTool, memosCrossDeptTool, memosDrillDownTool } from '../tools/recall';
+import {
+  memosRecallTool,
+  memosCrossDeptTool,
+  memosDrillDownTool,
+  memorySearchTool,
+  memoryStoreTool,
+} from '../tools/recall';
 
 jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn(),
@@ -9,6 +15,13 @@ jest.mock('../utils/config', () => ({
 
 jest.mock('../utils/summarization', () => ({
   getSummaryDrillDown: jest.fn(),
+}));
+
+jest.mock('../utils/classification', () => ({
+  classifyContent: jest.fn(async () => ({
+    content_type: 'fact',
+    importance: 3,
+  })),
 }));
 
 describe('Recall Tools', () => {
@@ -22,7 +35,8 @@ describe('Recall Tools', () => {
 
   beforeEach(() => {
     mockClient = {
-      searchFacts: jest.fn(async () => [{ uuid: 'f1', fact: 'test fact' }])
+      searchFacts: jest.fn(async () => [{ uuid: 'f1', fact: 'test fact' }]),
+      addMessages: jest.fn(async () => true),
     };
   });
 
@@ -102,6 +116,89 @@ describe('Recall Tools', () => {
 
     expect(result.success).toBe(true);
     expect(mockClient.searchFacts).toHaveBeenCalledWith('devops', 'deploy', 10);
+  });
+
+  it('memorySearchTool should behave like explicit recall search', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      department: 'devops',
+      access_level: 'restricted',
+      recall: {
+        content_types: ['fact'],
+        max_results: 10,
+        reranker: 'rrf',
+        min_importance: 1,
+        department_scope: 'own'
+      }
+    });
+
+    const result = await memorySearchTool(
+      { query: 'incident' },
+      { agentId: 'kernel' },
+      mockConfig,
+      mockClient
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockClient.searchFacts).toHaveBeenCalledWith('devops', 'incident', 10);
+  });
+
+  it('memoryStoreTool should store explicit memory with metadata', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      role: 'worker',
+      department: 'ops',
+      access_level: 'restricted',
+      capture: { enabled: true },
+      recall: {
+        content_types: ['fact'],
+        max_results: 10,
+        reranker: 'rrf',
+        min_importance: 1,
+        department_scope: 'own'
+      }
+    });
+
+    const result = await memoryStoreTool(
+      {
+        text: 'The production deploy runbook now requires canary checks first.',
+        content_type: 'sop',
+        importance: 4,
+      },
+      { agentId: 'kernel', userId: 'user-1', sessionId: 'session-1' },
+      { ...mockConfig, rate_limit_retries: 1 },
+      mockClient
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockClient.addMessages).toHaveBeenCalled();
+  });
+
+  it('memoryStoreTool should deny disabled capture policy', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      role: 'contractor',
+      department: null,
+      access_level: 'public',
+      capture: { enabled: false },
+      recall: {
+        content_types: ['summary'],
+        max_results: 3,
+        reranker: 'rrf',
+        min_importance: 1,
+        department_scope: 'all'
+      }
+    });
+
+    const result = await memoryStoreTool(
+      { text: 'Attempted note' },
+      { agentId: 'contractor-1' },
+      { ...mockConfig, rate_limit_retries: 1 },
+      mockClient
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Capture is disabled');
   });
 
   it('memosDrillDownTool should deny non-confidential agents', async () => {

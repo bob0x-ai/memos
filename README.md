@@ -1,47 +1,38 @@
-# MEMOS - Graphiti Memory Plugin for OpenClaw
+# MEMOS Plugin (OpenClaw Memory)
 
-A knowledge graph-based memory system for OpenClaw agents using [Graphiti](https://github.com/getzep/graphiti).
+MEMOS is a Graphiti-backed memory plugin for OpenClaw.
+It gives agents:
 
-## Features
+- automatic memory capture from conversations
+- automatic memory recall before responses
+- policy-scoped access by role and department
+- explicit tools for search, manual store, cross-department lookup, and summary drill-down
+- Prometheus metrics for observability
 
-- **Temporal Knowledge Graph**: Entities, relationships, and facts with bi-temporal tracking
-- **Department Scoping**: Configurable groups for agent isolation (ops, devops, etc.)
-- **Cross-Department Queries**: Agents can query other departments' memories
-- **Automatic Capture**: Per-turn episode extraction with trivial message filtering
-- **Smart Recall**: Hybrid semantic + keyword search
-- **Prometheus Metrics**: Built-in observability
-- **Rate Limit Resilience**: Exponential backoff retry for OpenAI API
+## What This Plugin Does
 
-## Architecture
+1. Stores agent conversation signals into Graphiti.
+2. Recalls relevant memory during future conversations.
+3. Enforces role-based policy from YAML:
+   - `worker`
+   - `management`
+   - `contractor`
+4. Provides summary-first recall for management, with drill-down to details.
 
-```
-OpenClaw Agent
-    ↓
-MEMOS Plugin
-    ↓ (HTTP)
-Graphiti Server
-    ↓ (Cypher)
-FalkorDB (Knowledge Graph)
-```
+## Core Concepts
 
-## Installation
+- Department: Memory namespace (for example `ops`, `devops`).
+- Role: Policy defaults (access level, recall behavior, capture enabled/disabled).
+- Agent assignment: Each known agent maps to a role and department.
+- Unknown agents: fall back to contractor policy.
 
-### 1. Start Graphiti + FalkorDB
+## Setup
 
-```bash
-cd ~/stack
-docker-compose up -d falkordb graphiti
-```
+### 1) Start Graphiti stack
 
-### 2. Configure OpenAI API Key
+Use your stack deployment for Graphiti + Neo4j.
 
-Create `~/stack/.env.graphiti`:
-
-```bash
-OPENAI_API_KEY="your-api-key-here"
-```
-
-### 3. Install Plugin
+### 2) Build plugin
 
 ```bash
 cd ~/plugin-dev/memos
@@ -49,16 +40,14 @@ npm install
 npm run build
 ```
 
-### 4. Configure OpenClaw
+### 3) Enable plugin in OpenClaw
 
-Add to `~/.openclaw/openclaw.json`:
+Example snippet in `~/.openclaw/openclaw.json`:
 
 ```json
 {
   "plugins": {
-    "slots": {
-      "memory": "memos"
-    },
+    "slots": { "memory": "memos" },
     "entries": {
       "memos": {
         "enabled": true,
@@ -74,149 +63,98 @@ Add to `~/.openclaw/openclaw.json`:
 }
 ```
 
-## Configuration
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `graphiti_url` | string | `http://localhost:8000` | Graphiti server URL |
-| `auto_capture` | boolean | `true` | Capture episodes after agent responses |
-| `auto_recall` | boolean | `true` | Recall facts before agent prompts |
-| `recall_limit` | number | `10` | Maximum facts to recall |
-| `sop_search_enabled` | boolean | `false` | Enable SOP document search (Phase 2) |
-
 ## Policy Configuration
 
-Department, role, and agent policy is configured in `config/memos.config.yaml`:
+Policy source of truth is YAML:
 
-```yaml
-departments:
-  ops: {}
-  devops: {}
+- `config/memos.config.yaml` (runtime)
+- `config/memos.test.yaml` (tests)
 
-roles:
-  worker: ...
-  management: ...
-  contractor: ...
+Key blocks:
 
-agents:
-  main:
-    role: management
-    department: ops
+- `departments`
+- `roles`
+- `agents`
+- `unknown_agent_policy`
+- `overrides`
+- `summarization`
+
+## Available Tools
+
+### 1) `memos_recall`
+Explicit recall search under policy scope.
+
+```json
+{ "query": "deployment checklist", "limit": 10 }
 ```
 
-## Agent Tools
+### 2) `memory_search`
+Compatibility alias for explicit search (same behavior as `memos_recall`).
 
-### `memos_recall`
+```json
+{ "query": "deployment checklist", "limit": 10 }
+```
 
-Search the current department's memory:
+### 3) `memory_store`
+Explicitly store a fact/memory (manual capture path).
 
 ```json
 {
-  "query": "What did we discuss about deployments?",
-  "limit": 5
-}
-```
-
-### `memos_cross_dept`
-
-Query another department's memory:
-
-```json
-{
-  "department": "devops",
-  "query": "API rate limiting issues",
-  "limit": 5
-}
-```
-
-### `memos_drill_down`
-
-Retrieve detail facts behind an executive summary:
-
-```json
-{
-  "summary_id": "sum_0123456789abcdef",
-  "limit": 10
+  "text": "Rollback requires DB migration guard checks",
+  "content_type": "sop",
+  "importance": 4,
+  "access_level": "restricted"
 }
 ```
 
 Notes:
-- Returns an explicit error when a summary is expired vs never found.
-- Requires confidential/management access.
+- `content_type` and `importance` are optional (classifier fallback is used if omitted).
+- Store is denied if policy capture is disabled (for example contractor fallback).
 
-## How It Works
+### 4) `memos_cross_dept`
+Query another department (allowed for confidential, or own department).
 
-### Capture Flow
+```json
+{ "department": "devops", "query": "incident trend", "limit": 5 }
+```
 
-1. Agent responds to user
-2. `agent_end` hook triggered
-3. Check if exchange is worth remembering (heuristics)
-4. Build episode with metadata:
-   - `reference_time`: Timestamp for temporal queries
-   - `agent_id`: Which agent
-   - `user_id`: Who the agent talked to
-   - `session_id`: Conversation ID
-5. Send to Graphiti with retry logic
-6. Graphiti extracts entities and relationships
+### 5) `memos_drill_down`
+Expand a summary into underlying facts (confidential only).
 
-### Recall Flow
+```json
+{ "summary_id": "sum_0123456789abcdef", "limit": 10 }
+```
 
-1. User sends message
-2. `before_prompt_build` hook triggered
-3. Build query from recent messages
-4. Search Graphiti (hybrid: semantic + BM25)
-5. Format results with highlighted entities
-6. Inject into system context
+Drill-down status outcomes:
+- success
+- expired summary
+- not found summary
 
-## Message Filtering
+## Observability
 
-Trivial exchanges are automatically filtered:
+Metrics are exported from the plugin via Prometheus metric names.
 
-- "thanks" / "you're welcome"
-- "ok" / "okay"
-- Short messages (< 50 chars)
-- Acknowledgment patterns
-
-## Prometheus Metrics
-
-Available at `/metrics`:
-
-- `memos_episodes_captured_total` - Episodes stored
-- `memos_episodes_filtered_total` - Episodes filtered
-- `memos_recall_operations_total` - Recall operations
-- `memos_recall_results_count` - Results per recall
-- `memos_graphiti_health` - Graphiti server health
-- `memos_cross_dept_queries_total` - Cross-dept queries
-- `memos_summary_requests_total` - Summary requests
-- `memos_summary_cache_hits_total` / `memos_summary_cache_misses_total` - Summary cache behavior
-- `memos_summary_generation_duration_seconds` - Summary generation latency
-- `memos_drill_down_calls_total` / `memos_drill_down_errors_total` - Drill-down usage and errors
+For full metric reference (names, labels, interpretation), see:
+- [METRICS.md](/home/openclaw/plugin-dev/memos/METRICS.md)
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Build
+# compile
 npm run build
 
-# Watch mode
-npm run dev
-
-# Type check
+# type check
 npm run typecheck
 
-# Unit/integration tests (offline-safe defaults)
+# standard tests (offline-safe defaults)
 npm test -- --runInBand
 
-# Live LLM integration tests (requires real OPENAI_API_KEY)
+# live LLM integration tests (requires real OPENAI_API_KEY)
 npm run test:llm
-
-# Lint
-npm run lint
 ```
 
-## License
+## Notes for Future Refactors
 
-MIT
+- Keep policy logic centralized in `src/utils/config.ts`.
+- Preserve `summary_id` + drill-down provenance contract in `src/utils/summarization.ts`.
+- If Graphiti community endpoints become available, native summary mode can replace fallback mode without changing agent-facing tools.

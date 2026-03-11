@@ -2,8 +2,8 @@ import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { getAgentConfig, getAllDepartments, loadConfig } from '../utils/config';
 import { getAccessFilter } from '../ontology';
+import { recallDuration, recallErrors, recallOperations, recallResults, summaryModeSelections } from '../metrics/prometheus';
 import { logger } from '../utils/logger';
-import { summaryModeSelections } from '../metrics/prometheus';
 import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
 
 /**
@@ -295,6 +295,7 @@ export async function recallHook(
   config: MemosConfig,
   client: GraphitiClient
 ): Promise<{ prependSystemContext?: string }> {
+  const startTime = Date.now();
   // Check if auto-recall is enabled
   if (!config.auto_recall) {
     logger.debug(`Auto-recall disabled for agent ${ctx.agentId}`);
@@ -310,6 +311,8 @@ export async function recallHook(
   const runtimeConfig = loadConfig();
 
   const department = agentConfig.department;
+  const departmentLabel = department || 'all';
+  recallOperations.labels(departmentLabel, ctx.agentId).inc();
   const recallLimit = Math.min(config.recall_limit, agentConfig.recall.max_results);
 
   const allDepartments = getAllDepartments();
@@ -424,6 +427,8 @@ export async function recallHook(
       const summaryCandidates = rrfRerank(dedupedFacts, Math.max(recallLimit * 2, 6));
       if (summaryCandidates.length === 0) {
         logger.debug(`No facts available for summary generation for ${ctx.agentId}`);
+        recallResults.labels(departmentLabel).observe(0);
+        recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
         return {};
       }
       const summary = await getOrGenerateSummary({
@@ -436,6 +441,8 @@ export async function recallHook(
         mode: capabilities.mode,
       });
 
+      recallResults.labels(departmentLabel).observe(summaryCandidates.length);
+      recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
       return {
         prependSystemContext: formatSummaryAsContext(summary.summaryId, summary.summary, summary.sourceFactIds),
       };
@@ -455,11 +462,17 @@ export async function recallHook(
     const context = formatFactsAsContext(rerankedFacts);
 
     if (context) {
+      recallResults.labels(departmentLabel).observe(rerankedFacts.length);
+      recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
       return { prependSystemContext: context };
     }
 
+    recallResults.labels(departmentLabel).observe(0);
+    recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
     return {};
   } catch (error) {
+    recallErrors.labels(departmentLabel, 'recall_failed').inc();
+    recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
     logger.error('Failed to recall from memory', error);
     // Return empty context on error - don't break the agent run
     return {};

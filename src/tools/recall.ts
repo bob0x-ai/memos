@@ -1,9 +1,26 @@
-import { GraphitiClient } from '../graphiti-client';
+import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { getAgentConfig, getAllDepartments, getDepartmentConfig } from '../utils/config';
-import { drillDownCalls, drillDownDuration, drillDownErrors } from '../metrics/prometheus';
+import {
+  crossDeptQueries,
+  drillDownCalls,
+  drillDownDuration,
+  drillDownErrors,
+  toolCalls,
+  toolErrors,
+} from '../metrics/prometheus';
 import { logger } from '../utils/logger';
 import { getSummaryDrillDown } from '../utils/summarization';
+import { classifyContent } from '../utils/classification';
+import { validateContentType, validateImportance } from '../ontology';
+
+function recordToolCall(tool: string, department: string): void {
+  toolCalls.labels(tool, department).inc();
+}
+
+function recordToolError(tool: string, department: string): void {
+  toolErrors.labels(tool, department).inc();
+}
 
 /**
  * Tool: memos_recall
@@ -27,10 +44,14 @@ export async function memosRecallTool(
   facts: Array<{ uuid: string; fact: string; valid_at?: string; invalid_at?: string }>;
   error?: string;
   }> {
+  const fallbackDept = 'unknown';
   try {
     const agentConfig = getAgentConfig(ctx.agentId);
+    const requesterDept = agentConfig?.department || fallbackDept;
+    recordToolCall('memos_recall', requesterDept);
     if (!agentConfig) {
       logger.warn(`memos_recall denied: no policy for agent ${ctx.agentId}`);
+      recordToolError('memos_recall', requesterDept);
       return {
         success: false,
         facts: [],
@@ -47,6 +68,7 @@ export async function memosRecallTool(
 
     if (departmentsToQuery.length === 0) {
       logger.warn(`memos_recall denied: no department for agent ${ctx.agentId}`);
+      recordToolError('memos_recall', requesterDept);
       return {
         success: false,
         facts: [],
@@ -82,6 +104,7 @@ export async function memosRecallTool(
       facts: dedupedFacts.slice(0, limit),
     };
   } catch (error) {
+    recordToolError('memos_recall', fallbackDept);
     logger.error('memos_recall tool failed', error);
     return {
       success: false,
@@ -114,10 +137,14 @@ export async function memosCrossDeptTool(
   facts: Array<{ uuid: string; fact: string; valid_at?: string; invalid_at?: string }>;
   error?: string;
 }> {
+  const fallbackDept = 'unknown';
   try {
     const requesterConfig = getAgentConfig(ctx.agentId);
+    const requesterDept = requesterConfig?.department || fallbackDept;
+    recordToolCall('memos_cross_dept', requesterDept);
     if (!requesterConfig) {
       logger.warn(`memos_cross_dept denied: no policy config for agent ${ctx.agentId}`);
+      recordToolError('memos_cross_dept', requesterDept);
       return {
         success: false,
         facts: [],
@@ -128,6 +155,7 @@ export async function memosCrossDeptTool(
     const targetDepartmentConfig = getDepartmentConfig(params.department);
     if (!targetDepartmentConfig) {
       logger.warn(`memos_cross_dept denied: target department ${params.department} not found`);
+      recordToolError('memos_cross_dept', requesterDept);
       return {
         success: false,
         facts: [],
@@ -144,6 +172,7 @@ export async function memosCrossDeptTool(
         `memos_cross_dept denied: agent ${ctx.agentId} (${requesterConfig.access_level}) cannot access ` +
         `department ${params.department}`
       );
+      recordToolError('memos_cross_dept', requesterDept);
       return {
         success: false,
         facts: [],
@@ -155,12 +184,14 @@ export async function memosCrossDeptTool(
 
     // Search facts in target department
     const facts = await client.searchFacts(params.department, params.query, limit);
+    crossDeptQueries.labels(requesterDept, params.department).inc();
 
     return {
       success: true,
       facts,
     };
   } catch (error) {
+    recordToolError('memos_cross_dept', fallbackDept);
     logger.error('memos_cross_dept tool failed', error);
     return {
       success: false,
@@ -203,8 +234,11 @@ export async function memosDrillDownTool(
   try {
     const agentId = ctx.agentId || 'unknown';
     const requesterConfig = getAgentConfig(ctx.agentId);
+    const requesterDept = requesterConfig?.department || 'unknown';
+    recordToolCall('memos_drill_down', requesterDept);
     if (!requesterConfig) {
       logger.warn(`memos_drill_down denied: no policy config for agent ${ctx.agentId}`);
+      recordToolError('memos_drill_down', requesterDept);
       drillDownErrors.labels(agentId, 'no_policy').inc();
       finish(agentId, 'denied_no_policy');
       return {
@@ -219,6 +253,7 @@ export async function memosDrillDownTool(
       logger.warn(
         `memos_drill_down denied: agent ${ctx.agentId} (${requesterConfig.access_level}) lacks confidential access`
       );
+      recordToolError('memos_drill_down', requesterDept);
       drillDownErrors.labels(agentId, 'access_denied').inc();
       finish(agentId, 'denied_access');
       return {
@@ -232,6 +267,7 @@ export async function memosDrillDownTool(
     const limit = params.limit || 10;
     const drillDown = getSummaryDrillDown(params.summary_id, limit);
     if (drillDown.status === 'not_found') {
+      recordToolError('memos_drill_down', requesterDept);
       drillDownErrors.labels(agentId, 'not_found').inc();
       finish(agentId, 'not_found');
       return {
@@ -243,6 +279,7 @@ export async function memosDrillDownTool(
     }
 
     if (drillDown.status === 'expired') {
+      recordToolError('memos_drill_down', requesterDept);
       drillDownErrors.labels(agentId, 'expired').inc();
       finish(agentId, 'expired');
       return {
@@ -270,6 +307,7 @@ export async function memosDrillDownTool(
     };
   } catch (error) {
     const agentId = ctx.agentId || 'unknown';
+    recordToolError('memos_drill_down', 'unknown');
     drillDownErrors.labels(agentId, 'internal').inc();
     finish(agentId, 'error');
     logger.error('memos_drill_down tool failed', error);
@@ -277,6 +315,165 @@ export async function memosDrillDownTool(
       success: false,
       summary_id: params.summary_id,
       facts: [],
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Tool: memory_search
+ * Compatibility alias for explicit memory search.
+ */
+export async function memorySearchTool(
+  params: { query: string; limit?: number },
+  ctx: { agentId: string },
+  config: MemosConfig,
+  client: GraphitiClient
+): ReturnType<typeof memosRecallTool> {
+  const result = await memosRecallTool(params, ctx, config, client);
+  const department = getAgentConfig(ctx.agentId)?.department || 'unknown';
+  recordToolCall('memory_search', department);
+  if (!result.success) {
+    recordToolError('memory_search', department);
+  }
+  return result;
+}
+
+/**
+ * Tool: memory_store
+ * Explicitly store a fact/memory from the current agent.
+ */
+export async function memoryStoreTool(
+  params: {
+    text: string;
+    content_type?: string;
+    importance?: number;
+    access_level?: 'public' | 'restricted' | 'confidential';
+  },
+  ctx: { agentId: string; userId?: string; sessionId?: string },
+  config: MemosConfig,
+  client: GraphitiClient
+): Promise<{
+  success: boolean;
+  stored?: {
+    department: string;
+    content_type: string;
+    importance: number;
+    access_level: string;
+  };
+  error?: string;
+}> {
+  const agentConfig = getAgentConfig(ctx.agentId);
+  const requesterDept = agentConfig?.department || 'unknown';
+  recordToolCall('memory_store', requesterDept);
+
+  if (!agentConfig) {
+    recordToolError('memory_store', requesterDept);
+    return {
+      success: false,
+      error: `No policy found for agent ${ctx.agentId}`,
+    };
+  }
+
+  if (!agentConfig.capture.enabled) {
+    recordToolError('memory_store', requesterDept);
+    return {
+      success: false,
+      error: `Capture is disabled for agent ${ctx.agentId}`,
+    };
+  }
+
+  if (!agentConfig.department) {
+    recordToolError('memory_store', requesterDept);
+    return {
+      success: false,
+      error: `No department assigned for agent ${ctx.agentId}`,
+    };
+  }
+
+  const text = (params.text || '').trim();
+  if (!text) {
+    recordToolError('memory_store', requesterDept);
+    return {
+      success: false,
+      error: 'text is required',
+    };
+  }
+
+  let contentType = params.content_type;
+  let importance = params.importance;
+
+  if (!contentType || importance === undefined) {
+    const classified = await classifyContent(text);
+    contentType = contentType || classified.content_type;
+    importance = importance ?? classified.importance;
+  }
+
+  if (!validateContentType(contentType)) {
+    contentType = 'fact';
+  }
+  if (!validateImportance(importance)) {
+    importance = 3;
+  }
+
+  const requestedAccess = params.access_level || agentConfig.access_level;
+  const allowedAccessLevels =
+    agentConfig.access_level === 'confidential'
+      ? ['public', 'restricted', 'confidential']
+      : agentConfig.access_level === 'restricted'
+      ? ['public', 'restricted']
+      : ['public'];
+
+  if (!allowedAccessLevels.includes(requestedAccess)) {
+    recordToolError('memory_store', requesterDept);
+    return {
+      success: false,
+      error: `access_level "${requestedAccess}" is not allowed for agent ${ctx.agentId}`,
+    };
+  }
+
+  const timestamp = new Date().toISOString();
+  const messages = [
+    {
+      content: text,
+      role_type: 'user' as const,
+      role: ctx.userId || ctx.agentId,
+      timestamp,
+    },
+  ];
+
+  const metadata = {
+    agent_id: ctx.agentId,
+    user_id: ctx.userId,
+    session_id: ctx.sessionId,
+    department: agentConfig.department,
+    access_level: requestedAccess,
+    content_type: contentType,
+    importance,
+    created_at: timestamp,
+    manual_store: true,
+    update_communities: true,
+  };
+
+  try {
+    await retryWithBackoff(
+      () => client.addMessages(agentConfig.department!, messages, metadata),
+      config.rate_limit_retries
+    );
+    return {
+      success: true,
+      stored: {
+        department: agentConfig.department,
+        content_type: contentType,
+        importance,
+        access_level: requestedAccess,
+      },
+    };
+  } catch (error) {
+    recordToolError('memory_store', requesterDept);
+    logger.error('memory_store tool failed', error);
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
@@ -348,6 +545,54 @@ export const toolDefinitions = [
         },
       },
       required: ['summary_id'],
+    },
+  },
+  {
+    name: 'memory_search',
+    description: 'Search memory explicitly (alias of memos_recall)',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query for facts/entities',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum number of results (default: 10)',
+          minimum: 1,
+          maximum: 50,
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'memory_store',
+    description: 'Store a fact or memory explicitly',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Memory text to store',
+        },
+        content_type: {
+          type: 'string',
+          description: 'Optional content type override',
+        },
+        importance: {
+          type: 'integer',
+          description: 'Optional importance override (1-5)',
+          minimum: 1,
+          maximum: 5,
+        },
+        access_level: {
+          type: 'string',
+          description: 'Optional access level override (must be allowed by role policy)',
+        },
+      },
+      required: ['text'],
     },
   },
 ];

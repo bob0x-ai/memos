@@ -4,7 +4,13 @@ import { MemosConfig, defaultConfig, validateConfig } from './config';
 import { resolveDepartment } from './utils/department';
 import { captureHook } from './hooks/capture';
 import { recallHook } from './hooks/recall';
-import { memosRecallTool, memosCrossDeptTool, memosDrillDownTool } from './tools/recall';
+import {
+  memosRecallTool,
+  memosCrossDeptTool,
+  memosDrillDownTool,
+  memorySearchTool,
+  memoryStoreTool,
+} from './tools/recall';
 import {
   graphitiHealth,
   getMetrics,
@@ -134,7 +140,40 @@ export function createPlugin(config: MemosConfig) {
         },
         handler: memosDrillDownTool as any,
       });
+
+      // memory_search tool (compat alias)
+      api.registerTool({
+        name: 'memory_search',
+        description: 'Search memory explicitly',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query' },
+            limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
+          },
+          required: ['query'],
+        },
+        handler: memorySearchTool as any,
+      });
+
+      // memory_store tool
+      api.registerTool({
+        name: 'memory_store',
+        description: 'Store a fact or memory explicitly',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Memory text to store' },
+            content_type: { type: 'string', description: 'Optional content type override' },
+            importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override' },
+            access_level: { type: 'string', description: 'Optional access level override' }
+          },
+          required: ['text'],
+        },
+        handler: memoryStoreTool as any,
+      });
     },
+    getMetrics: () => getMetrics(),
     shutdown: () => {
       clearInterval(healthCheckInterval);
       logger.info('Plugin shutdown');
