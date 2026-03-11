@@ -3,6 +3,7 @@ import { MemosConfig } from '../config';
 import { getAgentConfig, getAllDepartments, loadConfig } from '../utils/config';
 import { getAccessFilter } from '../ontology';
 import { logger } from '../utils/logger';
+import { summaryModeSelections } from '../metrics/prometheus';
 import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
 
 /**
@@ -418,6 +419,7 @@ export async function recallHook(
       } else {
         logger.info('Using plugin-side summary fallback chain (no native community endpoints detected)');
       }
+      summaryModeSelections.labels(capabilities.mode).inc();
 
       const summaryCandidates = rrfRerank(dedupedFacts, Math.max(recallLimit * 2, 6));
       if (summaryCandidates.length === 0) {
@@ -430,6 +432,8 @@ export async function recallHook(
         facts: summaryCandidates,
         cacheTtlHours: runtimeConfig.summarization.cache_ttl_hours,
         model: runtimeConfig.llm.model,
+        agentId: ctx.agentId,
+        mode: capabilities.mode,
       });
 
       return {

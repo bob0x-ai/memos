@@ -83,6 +83,44 @@ export const crossDeptQueries = new Counter({
   labelNames: ['source_dept', 'target_dept'],
 });
 
+// Summarization metrics
+export const summaryRequests = new Counter({
+  name: 'memos_summary_requests_total',
+  help: 'Total number of summary-generation requests',
+  labelNames: ['agent_id', 'mode'],
+});
+
+export const summaryCacheHits = new Counter({
+  name: 'memos_summary_cache_hits_total',
+  help: 'Total number of summary cache hits',
+  labelNames: ['agent_id'],
+});
+
+export const summaryCacheMisses = new Counter({
+  name: 'memos_summary_cache_misses_total',
+  help: 'Total number of summary cache misses',
+  labelNames: ['agent_id'],
+});
+
+export const summaryGenerationDuration = new Histogram({
+  name: 'memos_summary_generation_duration_seconds',
+  help: 'Duration of summary generation',
+  labelNames: ['agent_id', 'provider'],
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+});
+
+export const summaryGenerationErrors = new Counter({
+  name: 'memos_summary_generation_errors_total',
+  help: 'Total number of summary generation errors',
+  labelNames: ['agent_id', 'error_type'],
+});
+
+export const summaryModeSelections = new Counter({
+  name: 'memos_summary_mode_total',
+  help: 'Number of summary mode selections',
+  labelNames: ['mode'],
+});
+
 /**
  * Get all metrics in Prometheus format
  * @returns Metrics string

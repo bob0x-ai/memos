@@ -1,4 +1,11 @@
 import { createHash } from 'crypto';
+import {
+  summaryCacheHits,
+  summaryCacheMisses,
+  summaryGenerationDuration,
+  summaryGenerationErrors,
+  summaryRequests,
+} from '../metrics/prometheus';
 import { logger } from './logger';
 
 export interface SummaryCandidateFact {
@@ -25,6 +32,7 @@ export interface SummaryResult {
   sourceFactIds: string[];
   digest: string;
   cacheHit: boolean;
+  provider: 'cache' | 'llm' | 'heuristic';
 }
 
 const summaryCache = new Map<string, SummaryCacheEntry>();
@@ -225,28 +233,44 @@ export async function getOrGenerateSummary(params: {
   facts: SummaryCandidateFact[];
   cacheTtlHours: number;
   model: string;
+  agentId?: string;
+  mode?: 'native_communities' | 'fallback_summaries';
 }): Promise<SummaryResult> {
+  const agentId = params.agentId || 'unknown';
+  const mode = params.mode || 'fallback_summaries';
+  summaryRequests.labels(agentId, mode).inc();
+
   const digest = buildFactsDigest(params.facts);
   const key = buildCacheKey(params.query, params.departments, params.model, digest);
   const now = Date.now();
   const cached = summaryCache.get(key);
   if (cached && cached.expiresAtMs > now) {
     logger.debug(`Summary cache hit (key=${key.slice(0, 16)}...)`);
+    summaryCacheHits.labels(agentId).inc();
+    summaryGenerationDuration.labels(agentId, 'cache').observe(0);
     return {
       summary: cached.summary,
       sourceFactIds: cached.sourceFactIds,
       digest: cached.digest,
       cacheHit: true,
+      provider: 'cache',
     };
   }
 
+  summaryCacheMisses.labels(agentId).inc();
+
+  const start = Date.now();
   let generated: { summary: string; sourceFactIds: string[] };
+  let provider: 'llm' | 'heuristic' = 'llm';
   try {
     generated = await summarizeWithLLM(params.query, params.facts, params.model);
   } catch (error) {
+    provider = 'heuristic';
+    summaryGenerationErrors.labels(agentId, 'llm_unavailable').inc();
     logger.warn('LLM summary generation failed, using heuristic summary fallback', error);
     generated = buildHeuristicSummary(params.query, params.facts);
   }
+  summaryGenerationDuration.labels(agentId, provider).observe((Date.now() - start) / 1000);
 
   const ttlMs = Math.max(1, params.cacheTtlHours) * 60 * 60 * 1000;
   summaryCache.set(key, {
@@ -264,5 +288,6 @@ export async function getOrGenerateSummary(params: {
     sourceFactIds: generated.sourceFactIds,
     digest,
     cacheHit: false,
+    provider,
   };
 }
