@@ -67,8 +67,10 @@ describeLLM('LLM Integration', () => {
       });
 
       expect(first.summary.length).toBeGreaterThan(0);
+      expect(first.summaryId).toMatch(/^sum_/);
       expect(first.cacheHit).toBe(false);
       expect(second.cacheHit).toBe(true);
+      expect(second.summaryId).toBe(first.summaryId);
       expect(second.summary).toBe(first.summary);
     },
     60000

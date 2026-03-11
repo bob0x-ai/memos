@@ -20,14 +20,17 @@ export interface SummaryCandidateFact {
 
 interface SummaryCacheEntry {
   key: string;
+  summaryId: string;
   summary: string;
   sourceFactIds: string[];
+  sourceFacts: SummaryCandidateFact[];
   digest: string;
   createdAtMs: number;
   expiresAtMs: number;
 }
 
 export interface SummaryResult {
+  summaryId: string;
   summary: string;
   sourceFactIds: string[];
   digest: string;
@@ -36,6 +39,7 @@ export interface SummaryResult {
 }
 
 const summaryCache = new Map<string, SummaryCacheEntry>();
+const summaryById = new Map<string, SummaryCacheEntry>();
 
 function normalizeQuery(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -82,6 +86,10 @@ function buildCacheKey(
   const normalizedQuery = normalizeQuery(query);
   const sortedDepartments = [...departments].sort().join(',');
   return `${normalizedQuery}::${sortedDepartments}::${model}::${digest}`;
+}
+
+function buildSummaryId(key: string): string {
+  return `sum_${createHash('sha256').update(key).digest('hex').slice(0, 16)}`;
 }
 
 function extractJsonObject(raw: string): string | null {
@@ -217,14 +225,36 @@ async function summarizeWithLLM(
 
 export function clearSummaryCache(): void {
   summaryCache.clear();
+  summaryById.clear();
 }
 
-export function formatSummaryAsContext(summary: string, sourceFactIds: string[]): string {
+export function formatSummaryAsContext(summaryId: string, summary: string, sourceFactIds: string[]): string {
   const sourceLine =
     sourceFactIds.length > 0
       ? `\n\nSource facts: ${sourceFactIds.slice(0, 10).join(', ')}`
       : '';
-  return `## Executive Memory Summary\n\n${summary}${sourceLine}\n`;
+  return `## Executive Memory Summary\n\nSummary ID: ${summaryId}\n\n${summary}${sourceLine}\n`;
+}
+
+export function getSummaryDrillDown(summaryId: string, limit: number = 10): {
+  summaryId: string;
+  summary: string;
+  facts: SummaryCandidateFact[];
+  createdAtMs: number;
+  expiresAtMs: number;
+} | null {
+  const entry = summaryById.get(summaryId);
+  if (!entry) {
+    return null;
+  }
+
+  return {
+    summaryId: entry.summaryId,
+    summary: entry.summary,
+    facts: entry.sourceFacts.slice(0, Math.max(1, limit)),
+    createdAtMs: entry.createdAtMs,
+    expiresAtMs: entry.expiresAtMs,
+  };
 }
 
 export async function getOrGenerateSummary(params: {
@@ -242,13 +272,16 @@ export async function getOrGenerateSummary(params: {
 
   const digest = buildFactsDigest(params.facts);
   const key = buildCacheKey(params.query, params.departments, params.model, digest);
+  const summaryId = buildSummaryId(key);
   const now = Date.now();
   const cached = summaryCache.get(key);
   if (cached && cached.expiresAtMs > now) {
     logger.debug(`Summary cache hit (key=${key.slice(0, 16)}...)`);
     summaryCacheHits.labels(agentId).inc();
     summaryGenerationDuration.labels(agentId, 'cache').observe(0);
+    summaryById.set(cached.summaryId, cached);
     return {
+      summaryId: cached.summaryId,
       summary: cached.summary,
       sourceFactIds: cached.sourceFactIds,
       digest: cached.digest,
@@ -272,18 +305,29 @@ export async function getOrGenerateSummary(params: {
   }
   summaryGenerationDuration.labels(agentId, provider).observe((Date.now() - start) / 1000);
 
+  const rankedFacts = rankFacts(params.facts);
+  const sourceFacts =
+    generated.sourceFactIds.length > 0
+      ? rankedFacts.filter(f => f.uuid && generated.sourceFactIds.includes(f.uuid))
+      : rankedFacts.slice(0, 20);
+
   const ttlMs = Math.max(1, params.cacheTtlHours) * 60 * 60 * 1000;
-  summaryCache.set(key, {
+  const entry: SummaryCacheEntry = {
     key,
+    summaryId,
     summary: generated.summary,
     sourceFactIds: generated.sourceFactIds,
+    sourceFacts,
     digest,
     createdAtMs: now,
     expiresAtMs: now + ttlMs,
-  });
+  };
+  summaryCache.set(key, entry);
+  summaryById.set(summaryId, entry);
 
   logger.info(`Summary cache miss -> generated new summary (facts=${params.facts.length})`);
   return {
+    summaryId,
     summary: generated.summary,
     sourceFactIds: generated.sourceFactIds,
     digest,

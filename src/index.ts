@@ -4,7 +4,7 @@ import { MemosConfig, defaultConfig, validateConfig } from './config';
 import { resolveDepartment } from './utils/department';
 import { captureHook } from './hooks/capture';
 import { recallHook } from './hooks/recall';
-import { memosRecallTool, memosCrossDeptTool } from './tools/recall';
+import { memosRecallTool, memosCrossDeptTool, memosDrillDownTool } from './tools/recall';
 import {
   graphitiHealth,
   getMetrics,
@@ -118,6 +118,21 @@ export function createPlugin(config: MemosConfig) {
           required: ['department', 'query'],
         },
         handler: memosCrossDeptTool as any,
+      });
+
+      // memos_drill_down tool
+      api.registerTool({
+        name: 'memos_drill_down',
+        description: 'Retrieve detailed facts behind a summary ID',
+        parameters: {
+          type: 'object',
+          properties: {
+            summary_id: { type: 'string', description: 'Summary ID to drill into' },
+            limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max detail facts' }
+          },
+          required: ['summary_id'],
+        },
+        handler: memosDrillDownTool as any,
       });
     },
     shutdown: () => {

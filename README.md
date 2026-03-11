@@ -129,6 +129,17 @@ Query another department's memory:
 }
 ```
 
+### `memos_drill_down`
+
+Retrieve detail facts behind an executive summary:
+
+```json
+{
+  "summary_id": "sum_0123456789abcdef",
+  "limit": 10
+}
+```
+
 ## How It Works
 
 ### Capture Flow

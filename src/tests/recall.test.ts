@@ -164,6 +164,7 @@ describe('Recall Hook', () => {
 
     expect(mockClient.detectCapabilities).toHaveBeenCalled();
     expect(result.prependSystemContext).toContain('Executive Memory Summary');
+    expect(result.prependSystemContext).toContain('Summary ID:');
   });
 
   it('should skip when auto_recall is disabled', async () => {

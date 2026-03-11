@@ -2,6 +2,7 @@ import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { getAgentConfig, getAllDepartments, getDepartmentConfig } from '../utils/config';
 import { logger } from '../utils/logger';
+import { getSummaryDrillDown } from '../utils/summarization';
 
 /**
  * Tool: memos_recall
@@ -169,6 +170,88 @@ export async function memosCrossDeptTool(
 }
 
 /**
+ * Tool: memos_drill_down
+ * Retrieve detailed facts underlying a generated summary
+ *
+ * @param params Tool parameters
+ * @param params.summary_id Summary identifier
+ * @param params.limit Maximum number of facts to return (optional, default 10)
+ * @param ctx Plugin context
+ * @param config MEMOS configuration
+ * @param client Graphiti client
+ * @returns Drill-down facts
+ */
+export async function memosDrillDownTool(
+  params: { summary_id: string; limit?: number },
+  ctx: { agentId: string },
+  config: MemosConfig,
+  client: GraphitiClient
+): Promise<{
+  success: boolean;
+  summary_id: string;
+  summary?: string;
+  facts: Array<{ uuid?: string; fact: string; content_type?: string; importance?: number; department?: string }>;
+  error?: string;
+}> {
+  try {
+    const requesterConfig = getAgentConfig(ctx.agentId);
+    if (!requesterConfig) {
+      logger.warn(`memos_drill_down denied: no policy config for agent ${ctx.agentId}`);
+      return {
+        success: false,
+        summary_id: params.summary_id,
+        facts: [],
+        error: `No configuration found for agent ${ctx.agentId}`,
+      };
+    }
+
+    if (requesterConfig.access_level !== 'confidential') {
+      logger.warn(
+        `memos_drill_down denied: agent ${ctx.agentId} (${requesterConfig.access_level}) lacks confidential access`
+      );
+      return {
+        success: false,
+        summary_id: params.summary_id,
+        facts: [],
+        error: `Agent ${ctx.agentId} is not allowed to drill down summaries`,
+      };
+    }
+
+    const limit = params.limit || 10;
+    const drillDown = getSummaryDrillDown(params.summary_id, limit);
+    if (!drillDown) {
+      return {
+        success: false,
+        summary_id: params.summary_id,
+        facts: [],
+        error: `Summary "${params.summary_id}" not found in cache`,
+      };
+    }
+
+    return {
+      success: true,
+      summary_id: params.summary_id,
+      summary: drillDown.summary,
+      facts: drillDown.facts.map(fact => ({
+        uuid: fact.uuid,
+        fact: fact.fact,
+        content_type: fact.content_type,
+        importance: fact.importance,
+        department: fact._department,
+      })),
+    };
+  } catch (error) {
+    logger.error('memos_drill_down tool failed', error);
+    return {
+      success: false,
+      summary_id: params.summary_id,
+      facts: [],
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
  * Tool definitions for OpenClaw
  */
 export const toolDefinitions = [
@@ -214,6 +297,26 @@ export const toolDefinitions = [
         },
       },
       required: ['department', 'query'],
+    },
+  },
+  {
+    name: 'memos_drill_down',
+    description: 'Retrieve detailed facts behind a summary ID (management/confidential only)',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary_id: {
+          type: 'string',
+          description: 'Summary ID from executive summary context',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum number of underlying facts to return (default: 10)',
+          minimum: 1,
+          maximum: 50,
+        },
+      },
+      required: ['summary_id'],
     },
   },
 ];

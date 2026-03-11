@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { memosRecallTool, memosCrossDeptTool } from '../tools/recall';
+import { memosRecallTool, memosCrossDeptTool, memosDrillDownTool } from '../tools/recall';
 
 jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn(),
   getDepartmentConfig: jest.fn(),
   getAllDepartments: jest.fn().mockReturnValue(['ops', 'devops'])
+}));
+
+jest.mock('../utils/summarization', () => ({
+  getSummaryDrillDown: jest.fn(),
 }));
 
 describe('Recall Tools', () => {
@@ -98,5 +102,94 @@ describe('Recall Tools', () => {
 
     expect(result.success).toBe(true);
     expect(mockClient.searchFacts).toHaveBeenCalledWith('devops', 'deploy', 10);
+  });
+
+  it('memosDrillDownTool should deny non-confidential agents', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      department: 'devops',
+      access_level: 'restricted',
+      recall: {
+        content_types: ['fact'],
+        max_results: 10,
+        reranker: 'rrf',
+        min_importance: 1,
+        department_scope: 'own'
+      }
+    });
+
+    const result = await memosDrillDownTool(
+      { summary_id: 'sum_abc123' },
+      { agentId: 'kernel' },
+      mockConfig,
+      mockClient
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not allowed');
+  });
+
+  it('memosDrillDownTool should return underlying facts for confidential agents', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    const { getSummaryDrillDown } = require('../utils/summarization');
+    getAgentConfig.mockReturnValue({
+      department: 'ops',
+      access_level: 'confidential',
+      recall: {
+        content_types: ['summary'],
+        max_results: 5,
+        reranker: 'cross_encoder',
+        min_importance: 1,
+        department_scope: 'all'
+      }
+    });
+    getSummaryDrillDown.mockReturnValue({
+      summaryId: 'sum_abc123',
+      summary: 'Executive summary text',
+      facts: [
+        { uuid: 'f1', fact: 'Detail A', content_type: 'fact', importance: 4, _department: 'ops' },
+        { uuid: 'f2', fact: 'Detail B', content_type: 'decision', importance: 5, _department: 'devops' },
+      ],
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 3600000,
+    });
+
+    const result = await memosDrillDownTool(
+      { summary_id: 'sum_abc123', limit: 2 },
+      { agentId: 'main' },
+      mockConfig,
+      mockClient
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.facts).toHaveLength(2);
+    expect(result.facts[0].fact).toBe('Detail A');
+  });
+
+  it('memosDrillDownTool should handle unknown summary IDs', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    const { getSummaryDrillDown } = require('../utils/summarization');
+    getAgentConfig.mockReturnValue({
+      department: 'ops',
+      access_level: 'confidential',
+      recall: {
+        content_types: ['summary'],
+        max_results: 5,
+        reranker: 'cross_encoder',
+        min_importance: 1,
+        department_scope: 'all'
+      }
+    });
+    getSummaryDrillDown.mockReturnValue(null);
+
+    const result = await memosDrillDownTool(
+      { summary_id: 'sum_missing' },
+      { agentId: 'main' },
+      mockConfig,
+      mockClient
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not found');
   });
 });

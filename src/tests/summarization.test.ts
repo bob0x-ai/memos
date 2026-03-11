@@ -54,18 +54,22 @@ describe('Summarization Utils', () => {
     });
 
     expect(first.summary.length).toBeGreaterThan(0);
+    expect(first.summaryId).toMatch(/^sum_/);
     expect(first.cacheHit).toBe(false);
     expect(second.cacheHit).toBe(true);
+    expect(second.summaryId).toBe(first.summaryId);
     expect(second.summary).toBe(first.summary);
   });
 
   it('should format executive summary context', () => {
     const context = formatSummaryAsContext(
+      'sum_test123',
       'Operations are stable with one high-priority follow-up.',
       ['fact-1', 'fact-2']
     );
 
     expect(context).toContain('Executive Memory Summary');
+    expect(context).toContain('sum_test123');
     expect(context).toContain('fact-1');
   });
 });

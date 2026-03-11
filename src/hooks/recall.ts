@@ -437,7 +437,7 @@ export async function recallHook(
       });
 
       return {
-        prependSystemContext: formatSummaryAsContext(summary.summary, summary.sourceFactIds),
+        prependSystemContext: formatSummaryAsContext(summary.summaryId, summary.summary, summary.sourceFactIds),
       };
     }
 
