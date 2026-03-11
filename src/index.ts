@@ -39,21 +39,77 @@ export function createPlugin(config: MemosConfig) {
 
   logger.info('Plugin initialized');
 
+  const healthFailureThresholdRaw = Number(process.env.MEMOS_GRAPHITI_HEALTH_FAILURE_THRESHOLD || 3);
+  const healthFailureThreshold =
+    Number.isFinite(healthFailureThresholdRaw) && healthFailureThresholdRaw > 0
+      ? Math.floor(healthFailureThresholdRaw)
+      : 3;
+  const healthCheckIntervalMs = 30000;
+  let consecutiveHealthFailures = 0;
+
+  function formatHealthFailureReason(status: {
+    status?: number;
+    statusText?: string;
+    code?: string;
+    reason?: string;
+  }): string {
+    if (status.status) {
+      const text = status.statusText ? ` ${status.statusText}` : '';
+      return `HTTP ${status.status}${text}`;
+    }
+    if (status.code) {
+      return `${status.code}${status.reason ? ` (${status.reason})` : ''}`;
+    }
+    return status.reason || 'unknown error';
+  }
+
+  async function runHealthCheck(source: 'startup' | 'interval'): Promise<void> {
+    const status = await client.healthCheckDetailed();
+    graphitiHealth.set(status.healthy ? 1 : 0);
+
+    if (status.healthy) {
+      if (consecutiveHealthFailures > 0) {
+        logger.info(
+          `Graphiti health recovered after ${consecutiveHealthFailures} failed check(s)`
+        );
+      } else if (source === 'startup') {
+        logger.info('Graphiti health check passed at startup');
+      }
+      consecutiveHealthFailures = 0;
+      return;
+    }
+
+    consecutiveHealthFailures += 1;
+    const reason = formatHealthFailureReason(status);
+
+    if (source === 'startup') {
+      logger.warn(`Graphiti server not available at startup (${reason})`);
+      return;
+    }
+
+    if (consecutiveHealthFailures >= healthFailureThreshold) {
+      logger.error(
+        `Graphiti server is unhealthy (${consecutiveHealthFailures} consecutive failures, ${reason})`
+      );
+      return;
+    }
+
+    logger.warn(
+      `Graphiti health check failed (${consecutiveHealthFailures}/${healthFailureThreshold} before unhealthy, ${reason})`
+    );
+  }
+
   // Start health check interval
   const healthCheckInterval = setInterval(async () => {
-    const healthy = await client.healthCheck();
-    graphitiHealth.set(healthy ? 1 : 0);
-    
-    if (!healthy) {
-      logger.error('Graphiti server is unhealthy');
+    try {
+      await runHealthCheck('interval');
+    } catch (error) {
+      logger.error('Unexpected error during Graphiti health check', error);
     }
-  }, 30000); // Check every 30 seconds
+  }, healthCheckIntervalMs);
 
   // Initial health check
-  client.healthCheck().then(healthy => {
-    if (!healthy) {
-      logger.warn('Graphiti server not available at startup');
-    }
+  runHealthCheck('startup').then(() => {
     client.detectCapabilities().then(capabilities => {
       logger.info(
         `Graphiti capability mode: ${capabilities.mode} ` +
@@ -64,6 +120,8 @@ export function createPlugin(config: MemosConfig) {
       logger.warn('Graphiti capability detection failed', error);
     });
     logger.info('Plugin ready');
+  }).catch(error => {
+    logger.error('Startup health check failed unexpectedly', error);
   });
 
   return {

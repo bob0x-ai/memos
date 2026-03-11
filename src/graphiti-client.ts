@@ -60,6 +60,14 @@ export interface GraphitiCapabilities {
   mode: 'native_communities' | 'fallback_summaries';
 }
 
+export interface GraphitiHealthStatus {
+  healthy: boolean;
+  status?: number;
+  statusText?: string;
+  code?: string;
+  reason?: string;
+}
+
 export class GraphitiClient {
   private client: AxiosInstance;
   private capabilitiesCache: GraphitiCapabilities | null = null;
@@ -210,11 +218,41 @@ export class GraphitiClient {
    * @returns True if healthy
    */
   async healthCheck(): Promise<boolean> {
+    const status = await this.healthCheckDetailed();
+    return status.healthy;
+  }
+
+  /**
+   * Check Graphiti health and return diagnostic details for logging.
+   */
+  async healthCheckDetailed(): Promise<GraphitiHealthStatus> {
     try {
       const response = await this.client.get('/healthcheck');
-      return response.status === 200;
-    } catch {
-      return false;
+      return {
+        healthy: response.status === 200,
+        status: response.status,
+        statusText: response.statusText,
+      };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        return {
+          healthy: false,
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          code: error.code,
+          reason: error.message,
+        };
+      }
+      if (error instanceof Error) {
+        return {
+          healthy: false,
+          reason: error.message,
+        };
+      }
+      return {
+        healthy: false,
+        reason: 'Unknown healthcheck error',
+      };
     }
   }
 
