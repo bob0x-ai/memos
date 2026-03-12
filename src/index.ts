@@ -18,6 +18,7 @@ import {
   getMetrics,
 } from './metrics/prometheus';
 import { logger } from './utils/logger';
+import { ensureBundledMemorySkillInstalled } from './utils/skill-installer';
 
 /**
  * MEMOS Plugin for OpenClaw
@@ -40,6 +41,17 @@ export function createPlugin(config: MemosConfig) {
   });
 
   logger.info('Plugin initialized');
+  ensureBundledMemorySkillInstalled()
+    .then(result => {
+      if (result.status === 'unchanged') {
+        logger.debug(`Bundled memory skill already up to date at ${result.targetPath}`);
+      } else {
+        logger.info(`Bundled memory skill ${result.status} at ${result.targetPath}`);
+      }
+    })
+    .catch(error => {
+      logger.warn('Failed to install bundled memory skill into ~/.openclaw/skills', error);
+    });
 
   const healthFailureThresholdRaw = Number(process.env.MEMOS_GRAPHITI_HEALTH_FAILURE_THRESHOLD || 3);
   const healthFailureThreshold =

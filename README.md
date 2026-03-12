@@ -80,6 +80,20 @@ npm install
 npm run build
 ```
 
+### 2b) Bundled Memory Skill
+
+This repo bundles a memory skill at:
+
+- `skills/memory/SKILL.md`
+
+On plugin startup, MEMOS syncs that file into:
+
+- `~/.openclaw/skills/memory/SKILL.md`
+
+Override target skills directory with:
+
+- `OPENCLAW_SKILLS_DIR=/custom/path`
+
 ### 3) Enable plugin in OpenClaw
 
 Example snippet in `~/.openclaw/openclaw.json`:
