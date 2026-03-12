@@ -1,6 +1,12 @@
 import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { getAgentConfig, getAllDepartments, getDepartmentConfig } from '../utils/config';
+import {
+  COMPANY_DEPARTMENT_ID,
+  getAgentConfig,
+  getCompanyDepartmentId,
+  getDepartmentConfig,
+  getDepartmentsForRecall,
+} from '../utils/config';
 import {
   crossDeptQueries,
   drillDownCalls,
@@ -20,6 +26,14 @@ function recordToolCall(tool: string, department: string): void {
 
 function recordToolError(tool: string, department: string): void {
   toolErrors.labels(tool, department).inc();
+}
+
+function getAllowedAccessLevels(accessLevel: 'public' | 'restricted' | 'confidential'): string[] {
+  return accessLevel === 'confidential'
+    ? ['public', 'restricted', 'confidential']
+    : accessLevel === 'restricted'
+    ? ['public', 'restricted']
+    : ['public'];
 }
 
 /**
@@ -59,12 +73,7 @@ export async function memosRecallTool(
       };
     }
 
-    const departmentsToQuery =
-      agentConfig.access_level === 'confidential' ||
-      agentConfig.recall.department_scope === 'all' ||
-      !agentConfig.department
-        ? getAllDepartments()
-        : [agentConfig.department];
+    const departmentsToQuery = getDepartmentsForRecall(agentConfig);
 
     if (departmentsToQuery.length === 0) {
       logger.warn(`memos_recall denied: no department for agent ${ctx.agentId}`);
@@ -165,7 +174,8 @@ export async function memosCrossDeptTool(
 
     const canReadCrossDepartment =
       requesterConfig.access_level === 'confidential' ||
-      requesterConfig.department === params.department;
+      requesterConfig.department === params.department ||
+      params.department === COMPANY_DEPARTMENT_ID;
 
     if (!canReadCrossDepartment) {
       logger.warn(
@@ -417,12 +427,7 @@ export async function memoryStoreTool(
   }
 
   const requestedAccess = params.access_level || agentConfig.access_level;
-  const allowedAccessLevels =
-    agentConfig.access_level === 'confidential'
-      ? ['public', 'restricted', 'confidential']
-      : agentConfig.access_level === 'restricted'
-      ? ['public', 'restricted']
-      : ['public'];
+  const allowedAccessLevels = getAllowedAccessLevels(agentConfig.access_level);
 
   if (!allowedAccessLevels.includes(requestedAccess)) {
     recordToolError('memory_store', requesterDept);
@@ -477,6 +482,269 @@ export async function memoryStoreTool(
       error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
+}
+
+/**
+ * Tool: memos_announce
+ * Deliberately publish company-wide information into the shared "company" memory group.
+ * Management/confidential agents only.
+ */
+export async function memosAnnounceTool(
+  params: {
+    text: string;
+    content_type?: string;
+    importance?: number;
+  },
+  ctx: { agentId: string; userId?: string; sessionId?: string },
+  config: MemosConfig,
+  client: GraphitiClient
+): Promise<{
+  success: boolean;
+  stored?: {
+    department: string;
+    source_department: string;
+    content_type: string;
+    importance: number;
+    access_level: string;
+  };
+  error?: string;
+}> {
+  const requesterConfig = getAgentConfig(ctx.agentId);
+  const requesterDept = requesterConfig?.department || 'unknown';
+  recordToolCall('memos_announce', requesterDept);
+
+  if (!requesterConfig) {
+    recordToolError('memos_announce', requesterDept);
+    return {
+      success: false,
+      error: `No policy found for agent ${ctx.agentId}`,
+    };
+  }
+
+  if (requesterConfig.access_level !== 'confidential') {
+    recordToolError('memos_announce', requesterDept);
+    return {
+      success: false,
+      error: `Agent ${ctx.agentId} is not allowed to publish team announcements`,
+    };
+  }
+
+  const targetDepartment = requesterConfig.department;
+  if (!targetDepartment) {
+    recordToolError('memos_announce', requesterDept);
+    return {
+      success: false,
+      error: `No department assigned for agent ${ctx.agentId}`,
+    };
+  }
+
+  const text = (params.text || '').trim();
+  if (!text) {
+    recordToolError('memos_announce', requesterDept);
+    return {
+      success: false,
+      error: 'text is required',
+    };
+  }
+
+  let contentType = params.content_type || 'decision';
+  let importance = params.importance ?? 4;
+  const requestedAccess = 'restricted';
+
+  if (!validateContentType(contentType)) {
+    contentType = 'decision';
+  }
+  if (!validateImportance(importance)) {
+    importance = 4;
+  }
+
+  const timestamp = new Date().toISOString();
+  const messages = [
+    {
+      content: text,
+      role_type: 'user' as const,
+      role: ctx.userId || ctx.agentId,
+      timestamp,
+    },
+  ];
+
+  const metadata = {
+    agent_id: ctx.agentId,
+    user_id: ctx.userId,
+    session_id: ctx.sessionId,
+    department: targetDepartment,
+    source_department: requesterConfig.department,
+    access_level: requestedAccess,
+    content_type: contentType,
+    importance,
+    created_at: timestamp,
+    manual_store: true,
+    announcement: true,
+    update_communities: true,
+  };
+
+  try {
+    await retryWithBackoff(
+      () => client.addMessages(targetDepartment, messages, metadata),
+      config.rate_limit_retries
+    );
+    return {
+      success: true,
+      stored: {
+        department: targetDepartment,
+        source_department: requesterConfig.department || 'unknown',
+        content_type: contentType,
+        importance,
+        access_level: requestedAccess,
+      },
+    };
+  } catch (error) {
+    recordToolError('memos_announce', requesterDept);
+    logger.error('memos_announce tool failed', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Tool: memos_broadcast
+ * Publish company-wide information into shared "company" memory group.
+ * Management/confidential agents only.
+ */
+export async function memosBroadcastTool(
+  params: {
+    text: string;
+    content_type?: string;
+    importance?: number;
+  },
+  ctx: { agentId: string; userId?: string; sessionId?: string },
+  config: MemosConfig,
+  client: GraphitiClient
+): Promise<{
+  success: boolean;
+  stored?: {
+    department: string;
+    source_department: string;
+    content_type: string;
+    importance: number;
+    access_level: string;
+  };
+  error?: string;
+}> {
+  const department = getAgentConfig(ctx.agentId)?.department || 'unknown';
+  recordToolCall('memos_broadcast', department);
+  const requesterConfig = getAgentConfig(ctx.agentId);
+  if (!requesterConfig) {
+    recordToolError('memos_broadcast', department);
+    return {
+      success: false,
+      error: `No policy found for agent ${ctx.agentId}`,
+    };
+  }
+
+  if (requesterConfig.access_level !== 'confidential') {
+    recordToolError('memos_broadcast', department);
+    return {
+      success: false,
+      error: `Agent ${ctx.agentId} is not allowed to publish company broadcasts`,
+    };
+  }
+
+  const companyDepartment = getCompanyDepartmentId();
+  if (!companyDepartment) {
+    recordToolError('memos_broadcast', department);
+    return {
+      success: false,
+      error: 'Company department is not configured',
+    };
+  }
+
+  const text = (params.text || '').trim();
+  if (!text) {
+    recordToolError('memos_broadcast', department);
+    return {
+      success: false,
+      error: 'text is required',
+    };
+  }
+
+  let contentType = params.content_type || 'decision';
+  let importance = params.importance ?? 4;
+  const requestedAccess = 'public';
+
+  if (!validateContentType(contentType)) {
+    contentType = 'decision';
+  }
+  if (!validateImportance(importance)) {
+    importance = 4;
+  }
+
+  const timestamp = new Date().toISOString();
+  const messages = [
+    {
+      content: text,
+      role_type: 'user' as const,
+      role: ctx.userId || ctx.agentId,
+      timestamp,
+    },
+  ];
+
+  const metadata = {
+    agent_id: ctx.agentId,
+    user_id: ctx.userId,
+    session_id: ctx.sessionId,
+    department: companyDepartment,
+    source_department: requesterConfig.department,
+    access_level: requestedAccess,
+    content_type: contentType,
+    importance,
+    created_at: timestamp,
+    manual_store: true,
+    announcement: true,
+    broadcast: true,
+    update_communities: true,
+  };
+
+  let result: {
+    success: boolean;
+    stored?: {
+      department: string;
+      source_department: string;
+      content_type: string;
+      importance: number;
+      access_level: string;
+    };
+    error?: string;
+  };
+  try {
+    await retryWithBackoff(
+      () => client.addMessages(companyDepartment, messages, metadata),
+      config.rate_limit_retries
+    );
+    result = {
+      success: true,
+      stored: {
+        department: companyDepartment,
+        source_department: requesterConfig.department || 'unknown',
+        content_type: contentType,
+        importance,
+        access_level: requestedAccess,
+      },
+    };
+  } catch (error) {
+    logger.error('memos_broadcast tool failed', error);
+    result = {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+
+  if (!result.success) {
+    recordToolError('memos_broadcast', department);
+  }
+  return result;
 }
 
 /**
@@ -590,6 +858,54 @@ export const toolDefinitions = [
         access_level: {
           type: 'string',
           description: 'Optional access level override (must be allowed by role policy)',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'memos_announce',
+    description: 'Publish a deliberate team announcement to caller department (management/confidential only)',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Announcement text to publish to team memory',
+        },
+        content_type: {
+          type: 'string',
+          description: 'Optional content type (default: decision)',
+        },
+        importance: {
+          type: 'integer',
+          description: 'Optional importance override (default: 4)',
+          minimum: 1,
+          maximum: 5,
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'memos_broadcast',
+    description: 'Publish a deliberate company-wide broadcast (management/confidential only)',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Broadcast text to publish to company memory',
+        },
+        content_type: {
+          type: 'string',
+          description: 'Optional content type (default: decision)',
+        },
+        importance: {
+          type: 'integer',
+          description: 'Optional importance override (default: 4)',
+          minimum: 1,
+          maximum: 5,
         },
       },
       required: ['text'],

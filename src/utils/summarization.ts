@@ -8,6 +8,9 @@ import {
 } from '../metrics/prometheus';
 import { logger } from './logger';
 
+const DEFAULT_SUMMARIZATION_SYSTEM_PROMPT =
+  'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.';
+
 export interface SummaryCandidateFact {
   uuid?: string;
   fact: string;
@@ -165,7 +168,8 @@ function buildHeuristicSummary(
 async function summarizeWithLLM(
   query: string,
   facts: SummaryCandidateFact[],
-  model: string
+  model: string,
+  systemPrompt: string = DEFAULT_SUMMARIZATION_SYSTEM_PROMPT
 ): Promise<{ summary: string; sourceFactIds: string[] }> {
   if (process.env.NODE_ENV === 'test' && process.env.MEMOS_ENABLE_LLM_IN_TESTS !== 'true') {
     throw new Error('LLM summary disabled in test environment');
@@ -203,9 +207,7 @@ async function summarizeWithLLM(
         messages: [
           {
             role: 'system',
-            content:
-              'You summarize memory facts for executives. Return strict JSON only: ' +
-              '{"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.',
+            content: systemPrompt,
           },
           {
             role: 'user',
@@ -282,6 +284,7 @@ export async function getOrGenerateSummary(params: {
   facts: SummaryCandidateFact[];
   cacheTtlHours: number;
   model: string;
+  systemPrompt?: string;
   agentId?: string;
   mode?: 'native_communities' | 'fallback_summaries';
 }): Promise<SummaryResult> {
@@ -315,7 +318,12 @@ export async function getOrGenerateSummary(params: {
   let generated: { summary: string; sourceFactIds: string[] };
   let provider: 'llm' | 'heuristic' = 'llm';
   try {
-    generated = await summarizeWithLLM(params.query, params.facts, params.model);
+    generated = await summarizeWithLLM(
+      params.query,
+      params.facts,
+      params.model,
+      params.systemPrompt
+    );
   } catch (error) {
     provider = 'heuristic';
     summaryGenerationErrors.labels(agentId, 'llm_unavailable').inc();

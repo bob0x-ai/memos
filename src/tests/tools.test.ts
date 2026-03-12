@@ -3,14 +3,18 @@ import {
   memosRecallTool,
   memosCrossDeptTool,
   memosDrillDownTool,
+  memosAnnounceTool,
+  memosBroadcastTool,
   memorySearchTool,
   memoryStoreTool,
 } from '../tools/recall';
 
 jest.mock('../utils/config', () => ({
+  COMPANY_DEPARTMENT_ID: 'company',
   getAgentConfig: jest.fn(),
+  getDepartmentsForRecall: jest.fn(),
+  getCompanyDepartmentId: jest.fn(() => 'company'),
   getDepartmentConfig: jest.fn(),
-  getAllDepartments: jest.fn().mockReturnValue(['ops', 'devops'])
 }));
 
 jest.mock('../utils/summarization', () => ({
@@ -34,6 +38,8 @@ describe('Recall Tools', () => {
   };
 
   beforeEach(() => {
+    const { getDepartmentsForRecall } = require('../utils/config');
+    getDepartmentsForRecall.mockReturnValue(['devops']);
     mockClient = {
       searchFacts: jest.fn(async () => [{ uuid: 'f1', fact: 'test fact' }]),
       addMessages: jest.fn(async () => true),
@@ -41,7 +47,7 @@ describe('Recall Tools', () => {
   });
 
   it('memosRecallTool should prefer policy config department', async () => {
-    const { getAgentConfig } = require('../utils/config');
+    const { getAgentConfig, getDepartmentsForRecall } = require('../utils/config');
     getAgentConfig.mockReturnValue({
       department: 'devops',
       access_level: 'restricted',
@@ -53,6 +59,7 @@ describe('Recall Tools', () => {
         department_scope: 'own'
       }
     });
+    getDepartmentsForRecall.mockReturnValue(['devops']);
 
     const result = await memosRecallTool(
       { query: 'deployment' },
@@ -119,7 +126,7 @@ describe('Recall Tools', () => {
   });
 
   it('memorySearchTool should behave like explicit recall search', async () => {
-    const { getAgentConfig } = require('../utils/config');
+    const { getAgentConfig, getDepartmentsForRecall } = require('../utils/config');
     getAgentConfig.mockReturnValue({
       department: 'devops',
       access_level: 'restricted',
@@ -131,6 +138,7 @@ describe('Recall Tools', () => {
         department_scope: 'own'
       }
     });
+    getDepartmentsForRecall.mockReturnValue(['devops']);
 
     const result = await memorySearchTool(
       { query: 'incident' },
@@ -327,5 +335,108 @@ describe('Recall Tools', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('expired');
+  });
+
+  it('memosAnnounceTool should allow management to publish team-scoped memory', async () => {
+    const { getAgentConfig, getCompanyDepartmentId } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      role: 'management',
+      department: 'ops',
+      access_level: 'confidential',
+      capture: { enabled: true },
+      recall: {
+        content_types: ['summary'],
+        max_results: 5,
+        reranker: 'cross_encoder',
+        min_importance: 3,
+        department_scope: 'all'
+      }
+    });
+    getCompanyDepartmentId.mockReturnValue('company');
+
+    const result = await memosAnnounceTool(
+      { text: 'Company decision: switch incident pager to on-call rota B.' },
+      { agentId: 'main', userId: 'u1', sessionId: 's1' },
+      { ...mockConfig, rate_limit_retries: 1 },
+      mockClient
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.stored?.department).toBe('ops');
+    expect(result.stored?.access_level).toBe('restricted');
+    expect(mockClient.addMessages).toHaveBeenCalledWith(
+      'ops',
+      expect.any(Array),
+      expect.objectContaining({
+        department: 'ops',
+        source_department: 'ops',
+        announcement: true,
+      })
+    );
+  });
+
+  it('memosAnnounceTool should deny non-management agents', async () => {
+    const { getAgentConfig } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      role: 'worker',
+      department: 'devops',
+      access_level: 'restricted',
+      capture: { enabled: true },
+      recall: {
+        content_types: ['fact'],
+        max_results: 10,
+        reranker: 'rrf',
+        min_importance: 1,
+        department_scope: 'own'
+      }
+    });
+
+    const result = await memosAnnounceTool(
+      { text: 'Broadcast attempt' },
+      { agentId: 'kernel' },
+      { ...mockConfig, rate_limit_retries: 1 },
+      mockClient
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not allowed');
+  });
+
+  it('memosBroadcastTool should publish to company with public access', async () => {
+    const { getAgentConfig, getCompanyDepartmentId } = require('../utils/config');
+    getAgentConfig.mockReturnValue({
+      role: 'management',
+      department: 'ops',
+      access_level: 'confidential',
+      capture: { enabled: true },
+      recall: {
+        content_types: ['summary'],
+        max_results: 5,
+        reranker: 'cross_encoder',
+        min_importance: 3,
+        department_scope: 'all'
+      }
+    });
+    getCompanyDepartmentId.mockReturnValue('company');
+
+    const result = await memosBroadcastTool(
+      { text: 'Broadcast alias test' },
+      { agentId: 'main' },
+      { ...mockConfig, rate_limit_retries: 1 },
+      mockClient
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.stored?.department).toBe('company');
+    expect(result.stored?.access_level).toBe('public');
+    expect(mockClient.addMessages).toHaveBeenCalledWith(
+      'company',
+      expect.any(Array),
+      expect.objectContaining({
+        department: 'company',
+        source_department: 'ops',
+        broadcast: true,
+      })
+    );
   });
 });

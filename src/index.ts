@@ -8,6 +8,8 @@ import {
   memosRecallTool,
   memosCrossDeptTool,
   memosDrillDownTool,
+  memosAnnounceTool,
+  memosBroadcastTool,
   memorySearchTool,
   memoryStoreTool,
 } from './tools/recall';
@@ -229,6 +231,38 @@ export function createPlugin(config: MemosConfig) {
           required: ['text'],
         },
         handler: memoryStoreTool as any,
+      });
+
+      // memos_announce tool
+      api.registerTool({
+        name: 'memos_announce',
+        description: 'Publish deliberate team announcement to caller department with restricted access (management/confidential only)',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Announcement text to publish' },
+            content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
+            importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
+          },
+          required: ['text'],
+        },
+        handler: memosAnnounceTool as any,
+      });
+
+      // memos_broadcast tool
+      api.registerTool({
+        name: 'memos_broadcast',
+        description: 'Publish deliberate company-wide broadcast to company channel with public access (management/confidential only)',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Broadcast text to publish' },
+            content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
+            importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
+          },
+          required: ['text'],
+        },
+        handler: memosBroadcastTool as any,
       });
     },
     getMetrics: () => getMetrics(),

@@ -1,10 +1,13 @@
 import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { getAgentConfig, getAllDepartments, loadConfig } from '../utils/config';
+import { getAgentConfig, getDepartmentsForRecall, loadConfig } from '../utils/config';
 import { getAccessFilter } from '../ontology';
 import { recallDuration, recallErrors, recallOperations, recallResults, summaryModeSelections } from '../metrics/prometheus';
 import { logger } from '../utils/logger';
 import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
+
+const DEFAULT_RERANKER_SYSTEM_PROMPT =
+  'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.';
 
 /**
  * Format search results into context for the agent
@@ -181,7 +184,8 @@ export async function crossEncoderRerank(
   results: any[],
   query: string,
   limit: number,
-  model: string
+  model: string,
+  systemPrompt: string = DEFAULT_RERANKER_SYSTEM_PROMPT
 ): Promise<any[]> {
   if (results.length === 0) {
     return [];
@@ -229,7 +233,7 @@ export async function crossEncoderRerank(
         messages: [
           {
             role: 'system',
-            content: 'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.',
+            content: systemPrompt,
           },
           {
             role: 'user',
@@ -315,13 +319,7 @@ export async function recallHook(
   recallOperations.labels(departmentLabel, ctx.agentId).inc();
   const recallLimit = Math.min(config.recall_limit, agentConfig.recall.max_results);
 
-  const allDepartments = getAllDepartments();
-  const departmentsToQuery =
-    agentConfig.access_level === 'confidential' ||
-    agentConfig.recall.department_scope === 'all' ||
-    !department
-      ? allDepartments
-      : [department];
+  const departmentsToQuery = getDepartmentsForRecall(agentConfig);
 
   if (departmentsToQuery.length === 0) {
     logger.warn(`No departments available for recall (agent: ${ctx.agentId})`);
@@ -437,6 +435,7 @@ export async function recallHook(
         facts: summaryCandidates,
         cacheTtlHours: runtimeConfig.summarization.cache_ttl_hours,
         model: runtimeConfig.llm.model,
+        systemPrompt: runtimeConfig.llm.prompts?.summarization_system,
         agentId: ctx.agentId,
         mode: capabilities.mode,
       });
@@ -454,7 +453,8 @@ export async function recallHook(
         dedupedFacts,
         query,
         recallLimit,
-        runtimeConfig.llm.model
+        runtimeConfig.llm.model,
+        runtimeConfig.llm.prompts?.reranker_system
       )
       : rrfRerank(dedupedFacts, recallLimit);
 

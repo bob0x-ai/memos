@@ -4,6 +4,7 @@ import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
 
 jest.mock('../utils/config', () => ({
+  COMPANY_DEPARTMENT_ID: 'company',
   getAgentConfig: jest.fn().mockReturnValue({
     role: 'worker',
     access_level: 'restricted',
@@ -19,7 +20,13 @@ jest.mock('../utils/config', () => ({
       department_scope: 'own'
     }
   }),
-  getAllDepartments: jest.fn().mockReturnValue(['test-ops', 'test-devops']),
+  getDepartmentsForRecall: jest.fn((agentConfig: any) => (
+    agentConfig?.access_level === 'confidential' ||
+    agentConfig?.recall?.department_scope === 'all' ||
+    !agentConfig?.department
+      ? ['test-ops', 'test-devops', 'company']
+      : [agentConfig.department, 'company']
+  )),
   loadConfig: jest.fn().mockReturnValue({
     ontology: {
       content_types: ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact']
@@ -101,6 +108,23 @@ describe('Recall Hook', () => {
 
     expect(result.prependSystemContext).toBeDefined();
     expect(result.prependSystemContext).toContain('port 8080');
+  });
+
+  it('should query own department plus company for worker recall', async () => {
+    await recallHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.getMemory).toHaveBeenCalledWith(
+      'test-devops',
+      expect.any(Array),
+      expect.any(Number),
+      expect.any(Object)
+    );
+    expect(mockClient.getMemory).toHaveBeenCalledWith(
+      'company',
+      expect.any(Array),
+      expect.any(Number),
+      expect.any(Object)
+    );
   });
 
   it('should use cross_encoder reranker for management agents', async () => {

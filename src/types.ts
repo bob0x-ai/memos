@@ -67,10 +67,18 @@ export interface SummarizationConfig {
   levels: SummarizationLevel[];
 }
 
+export interface LLMPromptConfig {
+  classification_system: string;
+  classification_user_template: string;
+  reranker_system: string;
+  summarization_system: string;
+}
+
 export interface LLMConfig {
   model: string;
   temperature: number;
   max_tokens: number;
+  prompts: LLMPromptConfig;
 }
 
 export interface MemosConfig {

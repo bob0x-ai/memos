@@ -28,6 +28,7 @@ ontology:
 departments:
   ops: {}
   devops: {}
+  company: {}
 
 roles:
   worker:
@@ -117,3 +118,27 @@ llm:
   model: gpt-4o-mini
   temperature: 0.3
   max_tokens: 500
+  prompts:
+    classification_system: "You are a precise classifier. Return only requested output, with no extra text."
+    classification_user_template: |
+      Classify this conversation excerpt.
+
+      Choose one content_type:
+      - fact
+      - decision
+      - preference
+      - learning
+      - summary
+      - sop
+      - warning
+      - contact
+
+      Set importance as an integer 1-5:
+      1=trivial, 2=low, 3=medium, 4=high, 5=critical.
+
+      Return ONLY strict JSON with this exact shape:
+      {"content_type":"<one_of_types>","importance":<1_to_5>}
+
+      Excerpt: {content}
+    reranker_system: 'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.'
+    summarization_system: 'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.'

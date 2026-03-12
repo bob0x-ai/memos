@@ -1,28 +1,34 @@
 import { ClassificationResult } from '../types';
 import { logger } from './logger';
+import { DEFAULT_LLM_PROMPTS, loadConfig } from './config';
 
-const MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gpt-4o-mini';
 const VALID_CONTENT_TYPES = ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact'];
 
-const CLASSIFICATION_PROMPT = `Classify this conversation excerpt.
-
-Choose one content_type:
-- fact
-- decision
-- preference
-- learning
-- summary
-- sop
-- warning
-- contact
-
-Set importance as an integer 1-5:
-1=trivial, 2=low, 3=medium, 4=high, 5=critical.
-
-Return ONLY strict JSON with this exact shape:
-{"content_type":"<one_of_types>","importance":<1_to_5>}
-
-Excerpt: {content}`;
+function getClassificationSettings(): {
+  model: string;
+  systemPrompt: string;
+  userTemplate: string;
+} {
+  try {
+    const runtimeConfig = loadConfig();
+    return {
+      model: runtimeConfig.llm?.model || DEFAULT_MODEL,
+      systemPrompt:
+        runtimeConfig.llm?.prompts?.classification_system ||
+        DEFAULT_LLM_PROMPTS.classification_system,
+      userTemplate:
+        runtimeConfig.llm?.prompts?.classification_user_template ||
+        DEFAULT_LLM_PROMPTS.classification_user_template,
+    };
+  } catch {
+    return {
+      model: DEFAULT_MODEL,
+      systemPrompt: DEFAULT_LLM_PROMPTS.classification_system,
+      userTemplate: DEFAULT_LLM_PROMPTS.classification_user_template,
+    };
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -80,7 +86,12 @@ function parseClassificationResponse(raw: string): ClassificationResult | null {
   return null;
 }
 
-async function callLLM(prompt: string, content: string): Promise<string> {
+async function callLLM(
+  systemPrompt: string,
+  userTemplate: string,
+  model: string,
+  content: string
+): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY is not set');
@@ -104,13 +115,13 @@ async function callLLM(prompt: string, content: string): Promise<string> {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: MODEL,
+          model,
           messages: [
             {
               role: 'system',
-              content: 'You are a precise classifier. Return only requested output, with no extra text.'
+              content: systemPrompt,
             },
-            { role: 'user', content: prompt.replace('{content}', content) }
+            { role: 'user', content: userTemplate.replace('{content}', content) }
           ],
           temperature: 0,
           max_tokens: 100
@@ -172,7 +183,13 @@ export async function classifyContent(content: string): Promise<ClassificationRe
   }
 
   try {
-    const raw = await callLLM(CLASSIFICATION_PROMPT, content);
+    const settings = getClassificationSettings();
+    const raw = await callLLM(
+      settings.systemPrompt,
+      settings.userTemplate,
+      settings.model,
+      content
+    );
     const parsed = parseClassificationResponse(raw);
     if (!parsed) {
       throw new Error(`Invalid classification output: ${raw}`);

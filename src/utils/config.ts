@@ -10,7 +10,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from './logger';
 
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+function resolveProjectRoot(): string {
+  const candidates = [
+    path.resolve(__dirname, '..', '..', '..'),
+    path.resolve(__dirname, '..', '..'),
+  ];
+
+  for (const candidate of candidates) {
+    const configPath = path.join(candidate, 'config', 'memos.config.yaml');
+    if (fs.existsSync(configPath)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
+}
+
+const PROJECT_ROOT = resolveProjectRoot();
 const CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'memos.config.yaml');
 const TEST_CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'memos.test.yaml');
 
@@ -19,6 +35,34 @@ const yaml = require('js-yaml') as { load: (input: string) => unknown };
 let configCache: MemosConfig | null = null;
 
 const DEFAULT_CONTRACTOR_ROLE = 'contractor';
+export const COMPANY_DEPARTMENT_ID = 'company';
+export const DEFAULT_LLM_PROMPTS = {
+  classification_system:
+    'You are a precise classifier. Return only requested output, with no extra text.',
+  classification_user_template: `Classify this conversation excerpt.
+
+Choose one content_type:
+- fact
+- decision
+- preference
+- learning
+- summary
+- sop
+- warning
+- contact
+
+Set importance as an integer 1-5:
+1=trivial, 2=low, 3=medium, 4=high, 5=critical.
+
+Return ONLY strict JSON with this exact shape:
+{"content_type":"<one_of_types>","importance":<1_to_5>}
+
+Excerpt: {content}`,
+  reranker_system:
+    'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.',
+  summarization_system:
+    'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.',
+};
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -81,7 +125,8 @@ export function loadConfig(): MemosConfig {
     return config;
   } catch (error) {
     logger.warn(`Failed to load config from ${configPath}, using defaults`, error);
-    return getDefaultConfig();
+    configCache = getDefaultConfig();
+    return configCache;
   }
 }
 
@@ -111,6 +156,16 @@ function normalizeConfig(config: MemosConfig): MemosConfig {
   };
   normalized.overrides = normalized.overrides || {};
   normalized.overrides.agents = normalized.overrides.agents || {};
+  normalized.llm = normalized.llm || {
+    model: 'gpt-4o-mini',
+    temperature: 0.3,
+    max_tokens: 500,
+    prompts: { ...DEFAULT_LLM_PROMPTS },
+  };
+  normalized.llm.prompts = {
+    ...DEFAULT_LLM_PROMPTS,
+    ...(normalized.llm.prompts || {}),
+  };
 
   return normalized;
 }
@@ -126,7 +181,8 @@ function getDefaultConfig(): MemosConfig {
     },
     departments: {
       ops: {},
-      devops: {}
+      devops: {},
+      company: {}
     },
     roles: {
       worker: {
@@ -198,7 +254,10 @@ function getDefaultConfig(): MemosConfig {
     llm: {
       model: 'gpt-4o-mini',
       temperature: 0.3,
-      max_tokens: 500
+      max_tokens: 500,
+      prompts: {
+        ...DEFAULT_LLM_PROMPTS,
+      },
     }
   };
 }
@@ -246,4 +305,28 @@ export function getDepartmentConfig(departmentId: string): ReturnType<typeof loa
 
 export function getAllDepartments(): string[] {
   return Object.keys(loadConfig().departments);
+}
+
+export function getCompanyDepartmentId(): string | null {
+  const departments = loadConfig().departments;
+  return departments[COMPANY_DEPARTMENT_ID] ? COMPANY_DEPARTMENT_ID : null;
+}
+
+export function getDepartmentsForRecall(agentConfig: AgentResolvedConfig): string[] {
+  const allDepartments = getAllDepartments();
+  if (
+    agentConfig.access_level === 'confidential' ||
+    agentConfig.recall.department_scope === 'all' ||
+    !agentConfig.department
+  ) {
+    return allDepartments;
+  }
+
+  const departments = [agentConfig.department];
+  const companyDepartment = getCompanyDepartmentId();
+  if (companyDepartment && companyDepartment !== agentConfig.department) {
+    departments.push(companyDepartment);
+  }
+
+  return departments;
 }
