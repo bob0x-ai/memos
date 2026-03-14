@@ -20,20 +20,64 @@ import {
 import { logger } from './utils/logger';
 import { ensureBundledMemorySkillInstalled } from './utils/skill-installer';
 
-/**
- * MEMOS Plugin for OpenClaw
- * Graphiti-based memory with temporal tracking and department scoping
- */
-export function createPlugin(config: MemosConfig) {
+type HookMessage = {
+  role: string;
+  content: string;
+};
+
+function normalizeHookMessages(messages: unknown[] | undefined): HookMessage[] {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+
+  return messages.flatMap((message) => {
+    if (!message || typeof message !== 'object') {
+      return [];
+    }
+
+    const raw = message as {
+      role?: unknown;
+      content?: unknown;
+      text?: unknown;
+    };
+
+    const role = typeof raw.role === 'string' ? raw.role : null;
+    if (!role) {
+      return [];
+    }
+
+    let content = '';
+    if (typeof raw.content === 'string') {
+      content = raw.content;
+    } else if (typeof raw.text === 'string') {
+      content = raw.text;
+    } else if (Array.isArray(raw.content)) {
+      content = raw.content
+        .map((part) => {
+          if (typeof part === 'string') {
+            return part;
+          }
+          if (part && typeof part === 'object' && 'text' in part) {
+            const text = (part as { text?: unknown }).text;
+            return typeof text === 'string' ? text : '';
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    return [{ role, content: trimmed }];
+  });
+}
+
+function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   // Merge with defaults
-  const pluginConfig = {
-    ...defaultConfig,
-    ...config,
-  } as MemosConfig;
-
-  // Validate configuration
-  validateConfig(pluginConfig);
-
   // Initialize Graphiti client
   const client = new GraphitiClient({
     baseUrl: pluginConfig.graphiti_url,
@@ -138,154 +182,190 @@ export function createPlugin(config: MemosConfig) {
     logger.error('Startup health check failed unexpectedly', error);
   });
 
+  if (pluginConfig.auto_recall) {
+    api.on("before_prompt_build", async (event, ctx) => {
+      try {
+        const hookEvent = event as { messages?: unknown[] };
+        const result = await recallHook(
+          {},
+          {
+            ...ctx,
+            messages: normalizeHookMessages(hookEvent.messages),
+          },
+          pluginConfig,
+          client
+        );
+        if (result.prependSystemContext) {
+          return { prependContext: result.prependSystemContext };
+        }
+      } catch (error) {
+        logger.error('Recall hook error', error);
+      }
+      return;
+    });
+  }
+
+  if (pluginConfig.auto_capture) {
+    api.on("agent_end", async (event, ctx) => {
+      try {
+        const hookEvent = event as { messages?: unknown[] };
+        await captureHook(
+          {},
+          {
+            ...ctx,
+            messages: normalizeHookMessages(hookEvent.messages),
+          },
+          pluginConfig,
+          client
+        );
+      } catch (error) {
+        logger.error('Capture hook error', error);
+      }
+    });
+  }
+
+  // memos_recall tool
+  api.registerTool({
+    name: 'memos_recall',
+    description: 'Search for facts in the current agent\'s department memory',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
+      },
+      required: ['query'],
+    },
+    handler: memosRecallTool as any,
+  });
+
+  // memos_cross_dept tool
+  api.registerTool({
+    name: 'memos_cross_dept',
+    description: 'Query another department\'s memory',
+    parameters: {
+      type: 'object',
+      properties: {
+        department: { type: 'string', description: 'Target department' },
+        query: { type: 'string', description: 'Search query' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
+      },
+      required: ['department', 'query'],
+    },
+    handler: memosCrossDeptTool as any,
+  });
+
+  // memos_drill_down tool
+  api.registerTool({
+    name: 'memos_drill_down',
+    description: 'Retrieve detailed facts behind a summary ID',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary_id: { type: 'string', description: 'Summary ID to drill into' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max detail facts' }
+      },
+      required: ['summary_id'],
+    },
+    handler: memosDrillDownTool as any,
+  });
+
+  // memory_search tool (compat alias)
+  api.registerTool({
+    name: 'memory_search',
+    description: 'Search memory explicitly',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
+      },
+      required: ['query'],
+    },
+    handler: memorySearchTool as any,
+  });
+
+  // memory_store tool
+  api.registerTool({
+    name: 'memory_store',
+    description: 'Store a fact or memory explicitly',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Memory text to store' },
+        content_type: { type: 'string', description: 'Optional content type override' },
+        importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override' },
+        access_level: { type: 'string', description: 'Optional access level override' }
+      },
+      required: ['text'],
+    },
+    handler: memoryStoreTool as any,
+  });
+
+  // memos_announce tool
+  api.registerTool({
+    name: 'memos_announce',
+    description: 'Publish deliberate team announcement to caller department with restricted access (management/confidential only)',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Announcement text to publish' },
+        content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
+        importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
+      },
+      required: ['text'],
+    },
+    handler: memosAnnounceTool as any,
+  });
+
+  // memos_broadcast tool
+  api.registerTool({
+    name: 'memos_broadcast',
+    description: 'Publish deliberate company-wide broadcast to company channel with public access (management/confidential only)',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Broadcast text to publish' },
+        content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
+        importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
+      },
+      required: ['text'],
+    },
+    handler: memosBroadcastTool as any,
+  });
+
+  // Keep the interval reachable to prevent it from being optimized away.
+  void healthCheckInterval;
+  void getMetrics;
+}
+
+function resolvePluginConfig(api: OpenClawPluginApi): MemosConfig {
+  const pluginApi = api as OpenClawPluginApi & { pluginConfig?: Record<string, unknown> };
+  const pluginConfig = {
+    ...defaultConfig,
+    ...(pluginApi.pluginConfig || {}),
+  } as MemosConfig;
+  validateConfig(pluginConfig);
+  return pluginConfig;
+}
+
+/**
+ * MEMOS Plugin for OpenClaw
+ * Graphiti-based memory with temporal tracking and department scoping
+ */
+export function createPlugin() {
   return {
     id: "memos",
     name: "MEMOS - Graphiti Memory Plugin",
     description: "Knowledge graph-based memory with temporal tracking and department scoping",
     register(api: OpenClawPluginApi) {
-      if (pluginConfig.auto_recall) {
-        api.on("before_agent_start", async (event, ctx) => {
-          try {
-            const result = await recallHook({}, ctx, pluginConfig, client);
-            if (result.prependSystemContext) {
-              return { prependContext: result.prependSystemContext };
-            }
-          } catch (error) {
-            logger.error('Recall hook error', error);
-          }
-          return;
-        });
-      }
-
-      if (pluginConfig.auto_capture) {
-        api.on("agent_end", async (event, ctx) => {
-          try {
-            await captureHook({}, ctx, pluginConfig, client);
-          } catch (error) {
-            logger.error('Capture hook error', error);
-          }
-        });
-      }
-
-      // memos_recall tool
-      api.registerTool({
-        name: 'memos_recall',
-        description: 'Search for facts in the current agent\'s department memory',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query' },
-            limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
-          },
-          required: ['query'],
-        },
-        handler: memosRecallTool as any,
-      });
-
-      // memos_cross_dept tool
-      api.registerTool({
-        name: 'memos_cross_dept',
-        description: 'Query another department\'s memory',
-        parameters: {
-          type: 'object',
-          properties: {
-            department: { type: 'string', description: 'Target department' },
-            query: { type: 'string', description: 'Search query' },
-            limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
-          },
-          required: ['department', 'query'],
-        },
-        handler: memosCrossDeptTool as any,
-      });
-
-      // memos_drill_down tool
-      api.registerTool({
-        name: 'memos_drill_down',
-        description: 'Retrieve detailed facts behind a summary ID',
-        parameters: {
-          type: 'object',
-          properties: {
-            summary_id: { type: 'string', description: 'Summary ID to drill into' },
-            limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max detail facts' }
-          },
-          required: ['summary_id'],
-        },
-        handler: memosDrillDownTool as any,
-      });
-
-      // memory_search tool (compat alias)
-      api.registerTool({
-        name: 'memory_search',
-        description: 'Search memory explicitly',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query' },
-            limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' }
-          },
-          required: ['query'],
-        },
-        handler: memorySearchTool as any,
-      });
-
-      // memory_store tool
-      api.registerTool({
-        name: 'memory_store',
-        description: 'Store a fact or memory explicitly',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: 'Memory text to store' },
-            content_type: { type: 'string', description: 'Optional content type override' },
-            importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override' },
-            access_level: { type: 'string', description: 'Optional access level override' }
-          },
-          required: ['text'],
-        },
-        handler: memoryStoreTool as any,
-      });
-
-      // memos_announce tool
-      api.registerTool({
-        name: 'memos_announce',
-        description: 'Publish deliberate team announcement to caller department with restricted access (management/confidential only)',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: 'Announcement text to publish' },
-            content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
-            importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
-          },
-          required: ['text'],
-        },
-        handler: memosAnnounceTool as any,
-      });
-
-      // memos_broadcast tool
-      api.registerTool({
-        name: 'memos_broadcast',
-        description: 'Publish deliberate company-wide broadcast to company channel with public access (management/confidential only)',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: 'Broadcast text to publish' },
-            content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
-            importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
-          },
-          required: ['text'],
-        },
-        handler: memosBroadcastTool as any,
-      });
+      const pluginConfig = resolvePluginConfig(api);
+      startPlugin(pluginConfig, api);
     },
-    getMetrics: () => getMetrics(),
-    shutdown: () => {
-      clearInterval(healthCheckInterval);
-      logger.info('Plugin shutdown');
-    }
   };
 }
 
 export type { MemosConfig };
 export { defaultConfig, validateConfig, GraphitiClient, resolveDepartment };
 
-export default createPlugin;
+export default createPlugin();

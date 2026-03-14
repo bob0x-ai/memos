@@ -354,7 +354,8 @@ export async function recallHook(
     // Convert messages to Graphiti format
     const graphitiMessages = ctx.messages.slice(-3).map(m => ({
       content: m.content,
-      role_type: m.role as 'user' | 'assistant',
+      role_type: m.role as 'user' | 'assistant' | 'system',
+      role: m.role,
     }));
 
     const memoryByDepartment = await Promise.allSettled(

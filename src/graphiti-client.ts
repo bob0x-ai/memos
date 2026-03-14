@@ -136,7 +136,11 @@ export class GraphitiClient {
    */
   async getMemory(
     groupId: string,
-    messages: Array<{ content: string; role_type: 'user' | 'assistant' }>,
+    messages: Array<{
+      content: string;
+      role_type: 'user' | 'assistant' | 'system';
+      role: string;
+    }>,
     limit: number = 10,
     filters?: MemoryFilters
   ): Promise<{ facts: SearchResult[]; nodes: NodeResult[] }> {
@@ -149,16 +153,7 @@ export class GraphitiClient {
       max_facts: limit,
       center_node_uuid: null,
     };
-
-    if (filters?.access_levels) {
-      requestBody.access_levels = filters.access_levels;
-    }
-    if (filters?.content_types) {
-      requestBody.content_types = filters.content_types;
-    }
-    if (filters?.min_importance !== undefined) {
-      requestBody.min_importance = filters.min_importance;
-    }
+    void filters;
 
     const response = await this.client.post('/get-memory', requestBody);
 
