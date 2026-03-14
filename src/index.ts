@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk";
 import { GraphitiClient } from './graphiti-client';
 import { MemosConfig, defaultConfig, validateConfig } from './config';
 import { resolveDepartment } from './utils/department';
@@ -24,6 +24,20 @@ type HookMessage = {
   role: string;
   content: string;
 };
+
+type ToolRuntimeContext = {
+  agentId: string;
+  userId?: string;
+  sessionId?: string;
+};
+
+function buildToolRuntimeContext(ctx: OpenClawPluginToolContext): ToolRuntimeContext {
+  return {
+    agentId: ctx.agentId || 'unknown',
+    userId: ctx.requesterSenderId,
+    sessionId: ctx.sessionId,
+  };
+}
 
 function normalizeHookMessages(messages: unknown[] | undefined): HookMessage[] {
   if (!Array.isArray(messages)) {
@@ -225,7 +239,7 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   }
 
   // memos_recall tool
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memos_recall',
     description: 'Search for facts in the current agent\'s department memory',
     parameters: {
@@ -236,11 +250,12 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['query'],
     },
-    handler: memosRecallTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memosRecallTool(params as { query: string; limit?: number }, buildToolRuntimeContext(ctx), pluginConfig, client),
+  }));
 
   // memos_cross_dept tool
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memos_cross_dept',
     description: 'Query another department\'s memory',
     parameters: {
@@ -252,11 +267,17 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['department', 'query'],
     },
-    handler: memosCrossDeptTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memosCrossDeptTool(
+        params as { department: string; query: string; limit?: number },
+        buildToolRuntimeContext(ctx),
+        pluginConfig,
+        client
+      ),
+  }));
 
   // memos_drill_down tool
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memos_drill_down',
     description: 'Retrieve detailed facts behind a summary ID',
     parameters: {
@@ -267,11 +288,17 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['summary_id'],
     },
-    handler: memosDrillDownTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memosDrillDownTool(
+        params as { summary_id: string; limit?: number },
+        buildToolRuntimeContext(ctx),
+        pluginConfig,
+        client
+      ),
+  }));
 
   // memory_search tool (compat alias)
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memory_search',
     description: 'Search memory explicitly',
     parameters: {
@@ -282,11 +309,12 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['query'],
     },
-    handler: memorySearchTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memorySearchTool(params as { query: string; limit?: number }, buildToolRuntimeContext(ctx), pluginConfig, client),
+  }));
 
   // memory_store tool
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memory_store',
     description: 'Store a fact or memory explicitly',
     parameters: {
@@ -299,11 +327,22 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['text'],
     },
-    handler: memoryStoreTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memoryStoreTool(
+        params as {
+          text: string;
+          content_type?: string;
+          importance?: number;
+          access_level?: 'public' | 'restricted' | 'confidential';
+        },
+        buildToolRuntimeContext(ctx),
+        pluginConfig,
+        client
+      ),
+  }));
 
   // memos_announce tool
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memos_announce',
     description: 'Publish deliberate team announcement to caller department with restricted access (management/confidential only)',
     parameters: {
@@ -315,11 +354,17 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['text'],
     },
-    handler: memosAnnounceTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memosAnnounceTool(
+        params as { text: string; content_type?: string; importance?: number },
+        buildToolRuntimeContext(ctx),
+        pluginConfig,
+        client
+      ),
+  }));
 
   // memos_broadcast tool
-  api.registerTool({
+  api.registerTool((ctx) => ({
     name: 'memos_broadcast',
     description: 'Publish deliberate company-wide broadcast to company channel with public access (management/confidential only)',
     parameters: {
@@ -331,8 +376,14 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       },
       required: ['text'],
     },
-    handler: memosBroadcastTool as any,
-  });
+    execute: async (_toolCallId, params) =>
+      memosBroadcastTool(
+        params as { text: string; content_type?: string; importance?: number },
+        buildToolRuntimeContext(ctx),
+        pluginConfig,
+        client
+      ),
+  }));
 
   // Keep the interval reachable to prevent it from being optimized away.
   void healthCheckInterval;
