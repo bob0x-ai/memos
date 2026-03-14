@@ -124,7 +124,7 @@ export class GraphitiClient {
       max_facts: limit,
     });
 
-    return response.data.results || [];
+    return response.data.facts || [];
   }
 
   /**
