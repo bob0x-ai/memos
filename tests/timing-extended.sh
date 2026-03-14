@@ -7,7 +7,12 @@ echo "Extended OpenAI API Timing Test (5 samples each)"
 echo "═══════════════════════════════════════════════════"
 echo ""
 
-API_KEY="${OPENAI_API_KEY:-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}"
+API_KEY="${OPENAI_API_KEY:-}"
+
+if [ -z "$API_KEY" ]; then
+  echo "OPENAI_API_KEY is required"
+  exit 1
+fi
 
 echo "1. Embeddings API (text-embedding-3-small)"
 for i in 1 2 3 4 5; do
