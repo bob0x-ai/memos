@@ -51,6 +51,10 @@ const SUMMARY_MARKERS = [
   /\bSummary ID:\s*sum_/i,
 ];
 
+const SYNTHETIC_SESSION_MARKERS = [
+  /Continue where you left off\. The previous model attempt failed or timed out\./i,
+];
+
 const TOOL_DUMP_MARKERS = [
   /Conversation info \(untrusted metadata\):/i,
   /HTTP\/1\.1/i,
@@ -89,7 +93,7 @@ function stripCaptureNoise(content: string): string {
 }
 
 export function shouldSkipMessageForCapture(content: string): boolean {
-  return hasMarker(content, SUMMARY_MARKERS);
+  return hasMarker(content, [...SUMMARY_MARKERS, ...SYNTHETIC_SESSION_MARKERS]);
 }
 
 export function sanitizeMessageForCapture(content: string): string {
@@ -158,6 +162,50 @@ export function prepareExchangeForCapture(
     assistantMsg: cleanedAssistant,
     skip: false,
   };
+}
+
+export function shouldSkipMessageForRecall(role: string, content: string): boolean {
+  if (role !== 'user' && role !== 'assistant') {
+    return true;
+  }
+
+  if (hasMarker(content, [...SUMMARY_MARKERS, ...SYNTHETIC_SESSION_MARKERS])) {
+    return true;
+  }
+
+  const cleaned = sanitizeMessageForCapture(content);
+  if (!cleaned) {
+    return true;
+  }
+
+  return looksLikeToolDump(content, cleaned);
+}
+
+export function prepareMessagesForRecall(
+  messages: Array<{ role: string; content: string }>,
+  limit: number = 3
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const prepared = messages.flatMap(message => {
+    if (!message || typeof message.content !== 'string' || typeof message.role !== 'string') {
+      return [];
+    }
+
+    if (shouldSkipMessageForRecall(message.role, message.content)) {
+      return [];
+    }
+
+    const cleaned = sanitizeMessageForCapture(message.content);
+    if (!cleaned) {
+      return [];
+    }
+
+    return [{
+      role: message.role as 'user' | 'assistant',
+      content: cleaned,
+    }];
+  });
+
+  return prepared.slice(-Math.max(1, limit));
 }
 
 /**

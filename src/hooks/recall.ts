@@ -5,6 +5,7 @@ import { getAccessFilter } from '../ontology';
 import { recallDuration, recallErrors, recallOperations, recallResults, summaryModeSelections } from '../metrics/prometheus';
 import { logger } from '../utils/logger';
 import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
+import { prepareMessagesForRecall } from '../utils/filter';
 
 const DEFAULT_RERANKER_SYSTEM_PROMPT =
   'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.';
@@ -343,8 +344,10 @@ export async function recallHook(
   logger.debug(`Retrieval content types: ${retrievalContentTypes.join(', ')}`);
   logger.debug(`Minimum importance: ${minImportance}`);
 
+  const recallMessages = prepareMessagesForRecall(ctx.messages, 3);
+
   // Build query from recent messages
-  const query = buildQueryFromMessages(ctx.messages);
+  const query = buildQueryFromMessages(recallMessages);
   if (!query) {
     logger.debug(`No user query extracted for agent ${ctx.agentId}, skipping recall`);
     return {};
@@ -352,7 +355,7 @@ export async function recallHook(
 
   try {
     // Convert messages to Graphiti format
-    const graphitiMessages = ctx.messages.slice(-3).map(m => ({
+    const graphitiMessages = recallMessages.map(m => ({
       content: m.content,
       role_type: m.role as 'user' | 'assistant' | 'system',
       role: m.role,

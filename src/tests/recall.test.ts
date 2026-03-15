@@ -213,6 +213,48 @@ describe('Recall Hook', () => {
     expect(result.prependSystemContext).toBeUndefined();
   });
 
+  it('should filter tool results and synthetic summary/retry messages from recall context', async () => {
+    mockCtx.messages = [
+      {
+        role: 'user',
+        content: '## Executive Memory Summary\n\nSummary ID: sum_deadbeef\n\nBlocked deployment.\n',
+      },
+      {
+        role: 'user',
+        content: 'Continue where you left off. The previous model attempt failed or timed out.',
+      },
+      {
+        role: 'toolResult',
+        content: '{ "success": true, "facts": ["debug"] }',
+      },
+      {
+        role: 'assistant',
+        content: 'Previous answer with useful context.',
+      },
+      {
+        role: 'user',
+        content: 'What do we know about OPS-431 right now?',
+      },
+    ];
+
+    await recallHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.getMemory).toHaveBeenCalled();
+    const passedMessages = mockClient.getMemory.mock.calls[0][1];
+    expect(passedMessages).toEqual([
+      {
+        content: 'Previous answer with useful context.',
+        role_type: 'assistant',
+        role: 'assistant',
+      },
+      {
+        content: 'What do we know about OPS-431 right now?',
+        role_type: 'user',
+        role: 'user',
+      },
+    ]);
+  });
+
   describe('formatFactsAsContext', () => {
     it('should format facts', () => {
       const facts = [
