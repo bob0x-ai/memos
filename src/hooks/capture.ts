@@ -1,6 +1,6 @@
 import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { isWorthRemembering, getLastExchange } from '../utils/filter';
+import { getLastExchange, isWorthRemembering, prepareExchangeForCapture } from '../utils/filter';
 import { getAgentConfig } from '../utils/config';
 import { classifyContent } from '../utils/classification';
 import { validateContentType, validateImportance } from '../ontology';
@@ -63,15 +63,27 @@ export async function captureHook(
     return;
   }
 
+  const preparedExchange = prepareExchangeForCapture(lastUser, lastAssistant);
+  if (preparedExchange.skip) {
+    logger.info(
+      `Exchange filtered before capture for agent ${ctx.agentId} (${preparedExchange.reason || 'unknown_reason'})`
+    );
+    episodesFiltered.labels(department).inc();
+    return;
+  }
+
+  const sanitizedUser = preparedExchange.userMsg;
+  const sanitizedAssistant = preparedExchange.assistantMsg;
+
   // Check if exchange is worth remembering
-  if (!isWorthRemembering(lastUser, lastAssistant)) {
+  if (!isWorthRemembering(sanitizedUser, sanitizedAssistant)) {
     logger.info(`Exchange filtered as trivial, not capturing for agent ${ctx.agentId}`);
     episodesFiltered.labels(department).inc();
     return;
   }
 
   // Build content for classification
-  const content = `${lastUser}\nAssistant: ${lastAssistant}`;
+  const content = `${sanitizedUser}\nAssistant: ${sanitizedAssistant}`;
 
   // Classify content (Phase 7: content type + importance)
   logger.debug('Classifying captured content');
@@ -99,13 +111,13 @@ export async function captureHook(
   const timestamp = new Date().toISOString();
   const messages = [
     {
-      content: lastUser,
+      content: sanitizedUser,
       role_type: 'user' as const,
       role: ctx.userId || 'user',
       timestamp,
     },
     {
-      content: lastAssistant,
+      content: sanitizedAssistant,
       role_type: 'assistant' as const,
       role: ctx.agentId,
       timestamp,

@@ -126,4 +126,53 @@ describe('Capture Hook', () => {
     // Should not throw
     await expect(captureHook({}, mockCtx, mockConfig, mockClient)).resolves.not.toThrow();
   });
+
+  it('should skip executive summary injections', async () => {
+    mockCtx.messages = [
+      {
+        role: 'user',
+        content: '## Executive Memory Summary\n\nSummary ID: sum_deadbeef\n\nDeployment is blocked.\n',
+      },
+      {
+        role: 'assistant',
+        content: 'I will keep this in mind.',
+      },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).not.toHaveBeenCalled();
+  });
+
+  it('should skip tool dump style exchanges', async () => {
+    mockCtx.messages = [
+      {
+        role: 'user',
+        content: 'Conversation info (untrusted metadata):\n```json\n{\"message_id\":\"1\"}\n```',
+      },
+      {
+        role: 'assistant',
+        content: 'Found the root cause.\n```text\nPOST /messages HTTP/1.1 202 Accepted\n```',
+      },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).not.toHaveBeenCalled();
+  });
+
+  it('should truncate oversized messages before storing', async () => {
+    const longLine = 'alpha '.repeat(200);
+    mockCtx.messages = [
+      { role: 'user', content: `Please remember this detail: ${longLine}` },
+      { role: 'assistant', content: `Captured: ${longLine}` },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).toHaveBeenCalled();
+    const call = mockClient.addMessages.mock.calls[0];
+    expect(call[1][0].content.length).toBeLessThanOrEqual(600);
+    expect(call[1][1].content.length).toBeLessThanOrEqual(600);
+  });
 });
