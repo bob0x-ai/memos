@@ -9,9 +9,15 @@ function getClassificationSettings(): {
   model: string;
   systemPrompt: string;
   userTemplate: string;
+  temperature: number;
+  maxTokens: number;
 } {
   try {
     const runtimeConfig = loadConfig();
+    const configuredTemperature =
+      typeof runtimeConfig.llm?.temperature === 'number' ? runtimeConfig.llm.temperature : 0;
+    const configuredMaxTokens =
+      typeof runtimeConfig.llm?.max_tokens === 'number' ? runtimeConfig.llm.max_tokens : 100;
     return {
       model: runtimeConfig.llm?.model || DEFAULT_MODEL,
       systemPrompt:
@@ -20,12 +26,19 @@ function getClassificationSettings(): {
       userTemplate:
         runtimeConfig.llm?.prompts?.classification_user_template ||
         DEFAULT_LLM_PROMPTS.classification_user_template,
+      temperature: Number.isFinite(configuredTemperature) ? configuredTemperature : 0,
+      maxTokens:
+        Number.isFinite(configuredMaxTokens) && configuredMaxTokens > 0
+          ? Math.floor(configuredMaxTokens)
+          : 100,
     };
   } catch {
     return {
       model: DEFAULT_MODEL,
       systemPrompt: DEFAULT_LLM_PROMPTS.classification_system,
       userTemplate: DEFAULT_LLM_PROMPTS.classification_user_template,
+      temperature: 0,
+      maxTokens: 100,
     };
   }
 }
@@ -90,7 +103,8 @@ async function callLLM(
   systemPrompt: string,
   userTemplate: string,
   model: string,
-  content: string
+  content: string,
+  options: { temperature: number; maxTokens: number }
 ): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -123,18 +137,20 @@ async function callLLM(
             },
             { role: 'user', content: userTemplate.replace('{content}', content) }
           ],
-          temperature: 0,
-          max_tokens: 100
+          temperature: options.temperature,
+          max_tokens: options.maxTokens
         })
       });
 
       if (!response.ok) {
+        const errorBody = (await response.text()).trim();
         if (isRetryableStatus(response.status) && attempt < retries) {
           const delayMs = 400 * Math.pow(2, attempt);
           await sleep(delayMs);
           continue;
         }
-        throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+        const detail = errorBody ? ` - ${errorBody.slice(0, 1000)}` : '';
+        throw new Error(`LLM API error: ${response.status} ${response.statusText}${detail}`);
       }
 
       const data = await response.json() as {
@@ -188,7 +204,11 @@ export async function classifyContent(content: string): Promise<ClassificationRe
       settings.systemPrompt,
       settings.userTemplate,
       settings.model,
-      content
+      content,
+      {
+        temperature: settings.temperature,
+        maxTokens: settings.maxTokens,
+      }
     );
     const parsed = parseClassificationResponse(raw);
     if (!parsed) {
