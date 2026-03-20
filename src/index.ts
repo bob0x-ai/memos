@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { GraphitiClient } from './graphiti-client';
 import { MemosConfig, defaultConfig, validateConfig } from './config';
 import { resolveDepartment } from './utils/department';
@@ -210,7 +211,7 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
           client
         );
         if (result.prependSystemContext) {
-          return { prependContext: result.prependSystemContext };
+          return { prependSystemContext: result.prependSystemContext };
         }
       } catch (error) {
         logger.error('Recall hook error', error);
@@ -385,9 +386,35 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       ),
   }));
 
+  // Register metrics HTTP endpoint for Prometheus scraping
+  api.registerHttpRoute({
+    path: '/plugins/memos/metrics',
+    auth: 'plugin',
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return true;
+      }
+      try {
+        const metrics = await getMetrics();
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+        res.end(metrics);
+        return true;
+      } catch (error) {
+        logger.error('Failed to get metrics', error);
+        res.statusCode = 500;
+        res.end('Internal Server Error');
+        return true;
+      }
+    },
+  });
+
+  logger.info('Metrics endpoint registered at /plugins/memos/metrics');
+
   // Keep the interval reachable to prevent it from being optimized away.
   void healthCheckInterval;
-  void getMetrics;
 }
 
 function resolvePluginConfig(api: OpenClawPluginApi): MemosConfig {
