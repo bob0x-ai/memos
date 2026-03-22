@@ -38,8 +38,115 @@ export function isWorthRemembering(userMsg: string, assistantMsg: string): boole
   // Skip standalone acknowledgments (just "ok", "thanks", etc.)
   const ackPattern = /^(ok|okay|got it|thanks|thank you|sure|yes|no|yep|nope)[\.\!\?]*$/i;
   if (ackPattern.test(userMsg.trim())) return false;
+
+  if (isLowSignalConversationExchange(userMsg, assistantMsg)) return false;
   
   return true;
+}
+
+const DURABLE_SIGNAL_PATTERNS = [
+  /\bhttps?:\/\/\S+/i,
+  /\b[\w.-]+@[\w.-]+\.\w+\b/,
+  /\bport\s+\d{2,5}\b/i,
+  /\b\d{2,5}\/tcp\b/i,
+  /\b(?:proj|sum|mem|ops|inc|task|ticket|issue)(?:[-_][a-z0-9]{2,}|\d{2,})\b/i,
+  /\b(?:docker|kubectl|systemctl|npm|pnpm|uv|pytest|curl|ssh|scp|git)\b/i,
+  /\/plugins\/[A-Za-z0-9/_-]+/i,
+  /(?:^|\s)(?:~\/|\/[A-Za-z0-9._-]+\/|\.[/A-Za-z0-9._-]+)/,
+  /`[^`]+`/,
+  /\b(?:registerHttpRoute|registerCommand|before_prompt_build|sessionKey)\b/,
+  /\b(?:MEMOS|OPENAI|GRAPHITI)_[A-Z0-9_]+\b/,
+  /\b(?:TypeError|ReferenceError|SyntaxError|RangeError|Error:)\b/,
+  /\b(?:metrics endpoint|http route|auth field|project id|api key)\b/i,
+  /\b(?:decided|decision|policy|requirement|procedure|runbook|credential|password|token|key|endpoint|url|rollback|incident|deploy|deployment)\b/i,
+];
+
+const TRANSIENT_STATUS_PATTERNS = [
+  /\bstanding by\b/i,
+  /\bstill testing\b/i,
+  /\bwill do\b/i,
+  /\bchecking(?: now)?\b/i,
+  /\blooking into (?:it|this)\b/i,
+  /\binvestigating\b/i,
+  /\bworking on (?:it|this)\b/i,
+  /\bneed to write (?:one|two|more) messages\b/i,
+  /\bsee if .*?\b(?:works?|working)\b/i,
+  /\bcontext monitor(?:ing)? is working\b/i,
+  /\bdone\b/i,
+  /\bcompleted\b/i,
+  /\bok(?:ay)?\b/i,
+  /\bgot it\b/i,
+  /\backnowledged\b/i,
+  /\bnoted\b/i,
+  /\bready when you are\b/i,
+  /\bbe right back\b/i,
+];
+
+const GENERIC_TESTING_CHATTER_PATTERNS = [
+  /\bstill testing\b/i,
+  /\bneed to write (?:one|two|more) messages\b/i,
+  /\bsee if .*?\b(?:works?|working)\b/i,
+  /\bcontext monitor(?:ing)? is working\b/i,
+];
+
+const LOW_SIGNAL_FACT_PATTERNS = [
+  /\bstanding by\b/i,
+  /\bchecking(?: now)?\b/i,
+  /\bwill do\b/i,
+  /\blooking into (?:it|this)\b/i,
+  /\bworking on (?:it|this)\b/i,
+  /\binvestigating\b/i,
+  /\bavailable to help\b/i,
+  /\bready to assist\b/i,
+  /\bawaiting instructions\b/i,
+  /\bdone\b/i,
+  /\backnowledged\b/i,
+  /\bnoted\b/i,
+];
+
+export function containsDurableSignal(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return DURABLE_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+export function isLowSignalConversationExchange(userMsg: string, assistantMsg: string): boolean {
+  const normalizedUser = userMsg.trim();
+  const normalizedAssistant = assistantMsg.trim();
+  const combined = `${normalizedUser}\n${normalizedAssistant}`.trim();
+  if (!combined) {
+    return true;
+  }
+
+  if (containsDurableSignal(combined)) {
+    return false;
+  }
+
+  if (GENERIC_TESTING_CHATTER_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return true;
+  }
+
+  const shortExchange = combined.length < 180;
+  if (!shortExchange) {
+    return false;
+  }
+
+  return TRANSIENT_STATUS_PATTERNS.some((pattern) => pattern.test(combined));
+}
+
+export function isLowSignalFact(factText: string): boolean {
+  const trimmed = factText.trim();
+  if (!trimmed || containsDurableSignal(trimmed)) {
+    return false;
+  }
+
+  if (trimmed.length > 180) {
+    return false;
+  }
+
+  return LOW_SIGNAL_FACT_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 const DEFAULT_CAPTURE_MAX_MESSAGE_CHARS = 600;

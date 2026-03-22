@@ -1,27 +1,26 @@
 export interface Ontology {
   entity_types: string[];
-  content_types: string[];
-  access_levels: string[];
 }
 
 export type AccessLevel = 'public' | 'restricted' | 'confidential';
-export type RerankerType = 'rrf' | 'cross_encoder';
-export type DepartmentScope = 'own' | 'all';
+export type CaptureScope = 'private' | 'department' | 'company';
+export type RecallMode = 'facts' | 'summary';
+export type RecallScope = 'self' | 'department' | 'company' | 'all_departments';
 
 export interface DepartmentConfig {
   description?: string;
 }
 
 export interface AgentRecallConfig {
-  content_types: string[];
+  mode: RecallMode;
+  scopes: RecallScope[];
   max_results: number;
-  reranker: RerankerType;
   min_importance: number;
-  department_scope: DepartmentScope;
 }
 
 export interface CaptureConfig {
   enabled: boolean;
+  scope: CaptureScope;
 }
 
 export interface RoleConfig {
@@ -68,9 +67,6 @@ export interface SummarizationConfig {
 }
 
 export interface LLMPromptConfig {
-  classification_system: string;
-  classification_user_template: string;
-  reranker_system: string;
   summarization_system: string;
 }
 
@@ -100,10 +96,21 @@ export interface MemosNode {
   uuid: string;
   name: string;
   group_id: string;
-  entity_type?: 'Person' | 'System' | 'Project' | 'Error' | 'Document' | 'Organization';
-  content_type: 'fact' | 'decision' | 'preference' | 'learning' | 'summary' | 'sop' | 'warning' | 'contact';
-  access_level: 'public' | 'restricted' | 'confidential';
-  importance: 1 | 2 | 3 | 4 | 5;
+  entity_type?:
+    | 'Person'
+    | 'Preference'
+    | 'Requirement'
+    | 'Procedure'
+    | 'Location'
+    | 'Event'
+    | 'Organization'
+    | 'Service'
+    | 'Project'
+    | 'Issue'
+    | 'Decision'
+    | 'Document'
+    | 'Topic'
+    | 'Object';
   source_agent: string;
   source_episode: string;
   created_at: Date;
@@ -113,16 +120,4 @@ export interface MemosNode {
   summary_cache?: string;
   summary_cache_timestamp?: number;
   summary_content_hash?: string;
-}
-
-export interface ClassificationResult {
-  content_type: string;
-  importance: number;
-  entity_type?: string;
-}
-
-export interface AccessFilter {
-  access_levels: string[];
-  content_types: string[];
-  min_importance: number;
 }

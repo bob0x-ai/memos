@@ -3,7 +3,9 @@ import {
   AgentRecallConfig,
   AgentResolvedConfig,
   CaptureConfig,
+  CaptureScope,
   MemosConfig,
+  RecallScope,
   RoleConfig,
 } from '../types';
 import * as fs from 'fs';
@@ -37,29 +39,6 @@ let configCache: MemosConfig | null = null;
 const DEFAULT_CONTRACTOR_ROLE = 'contractor';
 export const COMPANY_DEPARTMENT_ID = 'company';
 export const DEFAULT_LLM_PROMPTS = {
-  classification_system:
-    'You are a precise classifier. Return only requested output, with no extra text.',
-  classification_user_template: `Classify this conversation excerpt.
-
-Choose one content_type:
-- fact
-- decision
-- preference
-- learning
-- summary
-- sop
-- warning
-- contact
-
-Set importance as an integer 1-5:
-1=trivial, 2=low, 3=medium, 4=high, 5=critical.
-
-Return ONLY strict JSON with this exact shape:
-{"content_type":"<one_of_types>","importance":<1_to_5>}
-
-Excerpt: {content}`,
-  reranker_system:
-    'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.',
   summarization_system:
     'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.',
 };
@@ -71,16 +50,16 @@ function clone<T>(value: T): T {
 function mergeCaptureConfig(base: CaptureConfig, override?: Partial<CaptureConfig>): CaptureConfig {
   return {
     enabled: override?.enabled ?? base.enabled,
+    scope: override?.scope ?? base.scope,
   };
 }
 
 function mergeRecallConfig(base: AgentRecallConfig, override?: Partial<AgentRecallConfig>): AgentRecallConfig {
   return {
-    content_types: override?.content_types ?? base.content_types,
+    mode: override?.mode ?? base.mode,
+    scopes: override?.scopes ?? base.scopes,
     max_results: override?.max_results ?? base.max_results,
-    reranker: override?.reranker ?? base.reranker,
     min_importance: override?.min_importance ?? base.min_importance,
-    department_scope: override?.department_scope ?? base.department_scope,
   };
 }
 
@@ -166,8 +145,49 @@ function normalizeConfig(config: MemosConfig): MemosConfig {
     ...DEFAULT_LLM_PROMPTS,
     ...(normalized.llm.prompts || {}),
   };
+  normalizeRolePolicies(normalized);
 
   return normalized;
+}
+
+function normalizeRolePolicies(config: MemosConfig): void {
+  for (const roleConfig of Object.values(config.roles)) {
+    const capture = roleConfig.capture as CaptureConfig & { [key: string]: unknown };
+    if (!capture.scope) {
+      capture.scope = 'department';
+    }
+
+    const recall = roleConfig.recall as AgentRecallConfig & {
+      [key: string]: unknown;
+      content_types?: string[];
+      department_scope?: string;
+    };
+
+    if (!recall.mode) {
+      const legacyContentTypes = Array.isArray(recall.content_types) ? recall.content_types : [];
+      recall.mode =
+        legacyContentTypes.length === 1 && legacyContentTypes[0] === 'summary'
+          ? 'summary'
+          : 'facts';
+    }
+
+    if (!Array.isArray(recall.scopes) || recall.scopes.length === 0) {
+      const legacyDepartmentScope = recall.department_scope === 'all' ? 'all' : 'own';
+      const scopes: RecallScope[] = [];
+      if (recall.mode === 'summary') {
+        scopes.push('self');
+      }
+      if (legacyDepartmentScope === 'all') {
+        scopes.push('all_departments');
+      } else {
+        scopes.push('department');
+      }
+      if (!scopes.includes('company')) {
+        scopes.push('company');
+      }
+      recall.scopes = scopes;
+    }
+  }
 }
 
 function getDefaultConfig(): MemosConfig {
@@ -175,9 +195,22 @@ function getDefaultConfig(): MemosConfig {
     name: 'memos',
     version: '1.0.0',
     ontology: {
-      entity_types: ['Person', 'System', 'Project', 'Error', 'Document', 'Organization'],
-      content_types: ['fact', 'decision', 'preference', 'learning', 'summary', 'sop', 'warning', 'contact'],
-      access_levels: ['public', 'restricted', 'confidential']
+      entity_types: [
+        'Person',
+        'Preference',
+        'Requirement',
+        'Procedure',
+        'Location',
+        'Event',
+        'Organization',
+        'Service',
+        'Project',
+        'Issue',
+        'Decision',
+        'Document',
+        'Topic',
+        'Object',
+      ],
     },
     departments: {
       ops: {},
@@ -189,39 +222,39 @@ function getDefaultConfig(): MemosConfig {
         access_level: 'restricted',
         capture: {
           enabled: true,
+          scope: 'department',
         },
         recall: {
-          content_types: ['fact', 'learning', 'warning', 'sop'],
+          mode: 'facts',
+          scopes: ['department', 'company'],
           max_results: 10,
-          reranker: 'rrf',
           min_importance: 2,
-          department_scope: 'own',
         },
       },
       management: {
         access_level: 'confidential',
         capture: {
           enabled: true,
+          scope: 'private',
         },
         recall: {
-          content_types: ['summary'],
+          mode: 'summary',
+          scopes: ['self', 'department', 'company'],
           max_results: 5,
-          reranker: 'cross_encoder',
           min_importance: 3,
-          department_scope: 'all',
         },
       },
       contractor: {
         access_level: 'public',
         capture: {
           enabled: false,
+          scope: 'company',
         },
         recall: {
-          content_types: ['summary', 'fact'],
+          mode: 'facts',
+          scopes: ['company'],
           max_results: 3,
-          reranker: 'rrf',
           min_importance: 3,
-          department_scope: 'all',
         },
       },
     },
@@ -312,21 +345,47 @@ export function getCompanyDepartmentId(): string | null {
   return departments[COMPANY_DEPARTMENT_ID] ? COMPANY_DEPARTMENT_ID : null;
 }
 
-export function getDepartmentsForRecall(agentConfig: AgentResolvedConfig): string[] {
-  const allDepartments = getAllDepartments();
-  if (
-    agentConfig.access_level === 'confidential' ||
-    agentConfig.recall.department_scope === 'all' ||
-    !agentConfig.department
-  ) {
-    return allDepartments;
+export function getCaptureGroupId(agentId: string, agentConfig: AgentResolvedConfig): string | null {
+  switch (agentConfig.capture.scope as CaptureScope) {
+    case 'private':
+      return agentId;
+    case 'department':
+      return agentConfig.department;
+    case 'company':
+      return getCompanyDepartmentId();
+    default:
+      return agentConfig.department;
+  }
+}
+
+export function getGroupsForRecall(agentId: string, agentConfig: AgentResolvedConfig): string[] {
+  const groups: string[] = [];
+  const allDepartments = getAllDepartments().filter((department) => department !== COMPANY_DEPARTMENT_ID);
+
+  for (const scope of agentConfig.recall.scopes) {
+    switch (scope) {
+      case 'self':
+        groups.push(agentId);
+        break;
+      case 'department':
+        if (agentConfig.department) {
+          groups.push(agentConfig.department);
+        }
+        break;
+      case 'company': {
+        const companyDepartment = getCompanyDepartmentId();
+        if (companyDepartment) {
+          groups.push(companyDepartment);
+        }
+        break;
+      }
+      case 'all_departments':
+        groups.push(...allDepartments);
+        break;
+      default:
+        break;
+    }
   }
 
-  const departments = [agentConfig.department];
-  const companyDepartment = getCompanyDepartmentId();
-  if (companyDepartment && companyDepartment !== agentConfig.department) {
-    departments.push(companyDepartment);
-  }
-
-  return departments;
+  return [...new Set(groups.filter(Boolean))];
 }

@@ -1,17 +1,30 @@
-import { describe, it, expect, beforeEach, afterAll } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterAll, afterEach, jest } from '@jest/globals';
 import {
   clearSummaryCache,
   formatSummaryAsContext,
   getSummaryDrillDown,
   getOrGenerateSummary,
 } from '../utils/summarization';
+import { getMetrics, resetMetrics } from '../metrics/prometheus';
 
 describe('Summarization Utils', () => {
   const originalApiKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  const originalEnableLlmInTests = process.env.MEMOS_ENABLE_LLM_IN_TESTS;
 
   beforeEach(() => {
     clearSummaryCache();
+    resetMetrics();
     delete process.env.OPENAI_API_KEY;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (originalEnableLlmInTests === undefined) {
+      delete process.env.MEMOS_ENABLE_LLM_IN_TESTS;
+    } else {
+      process.env.MEMOS_ENABLE_LLM_IN_TESTS = originalEnableLlmInTests;
+    }
   });
 
   afterAll(() => {
@@ -28,13 +41,11 @@ describe('Summarization Utils', () => {
         uuid: 'f1',
         fact: 'Deployment to production requires health checks.',
         importance: 4,
-        content_type: 'sop',
       },
       {
         uuid: 'f2',
         fact: 'Kernel fixed a timeout issue in API gateway.',
         importance: 5,
-        content_type: 'learning',
       },
     ];
 
@@ -85,7 +96,7 @@ describe('Summarization Utils', () => {
         query: 'Show me important learnings',
         departments: ['ops'],
         facts: [
-          { uuid: 'f1', fact: 'Retry logic reduced errors', content_type: 'learning', importance: 4 },
+          { uuid: 'f1', fact: 'Retry logic reduced errors', importance: 4 },
         ],
         cacheTtlHours: 1,
         model: 'gpt-4o-mini',
@@ -101,5 +112,48 @@ describe('Summarization Utils', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (Date as any).now = originalNow;
     }
+  });
+
+  it('should emit LLM token metrics for live summary generation', async () => {
+    process.env.OPENAI_API_KEY = 'test-api-key';
+    process.env.MEMOS_ENABLE_LLM_IN_TESTS = 'true';
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: '{"summary":"Executive summary","source_fact_ids":["f1"]}',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 250,
+          completion_tokens: 30,
+          total_tokens: 280,
+        },
+      }),
+    })) as any;
+
+    const result = await getOrGenerateSummary({
+      query: 'Summarize recent ops updates',
+      departments: ['ops'],
+      facts: [
+        { uuid: 'f1', fact: 'Deploy was delayed by a database lock', importance: 4 },
+      ],
+      cacheTtlHours: 1,
+      model: 'gpt-4o-mini',
+      agentId: 'main',
+    });
+
+    expect(result.provider).toBe('llm');
+
+    const metrics = await getMetrics();
+    expect(metrics).toContain('use_case="summarization"');
+    expect(metrics).toContain('memos_llm_input_tokens_total');
+    expect(metrics).toContain(' 250');
+    expect(metrics).toContain('memos_llm_output_tokens_total');
+    expect(metrics).toContain(' 30');
+    expect(metrics).toContain('memos_llm_estimated_cost_usd_total');
   });
 });

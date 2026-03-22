@@ -76,6 +76,12 @@ export const graphitiHealth = new Gauge({
   help: 'Graphiti server health (1 = healthy, 0 = unhealthy)',
 });
 
+export const backendRequests = new Counter({
+  name: 'memos_backend_requests_total',
+  help: 'Graphiti backend operations by backend and outcome',
+  labelNames: ['operation', 'backend', 'outcome'],
+});
+
 // Cross-department queries
 export const crossDeptQueries = new Counter({
   name: 'memos_cross_dept_queries_total',
@@ -121,6 +127,18 @@ export const summaryModeSelections = new Counter({
   labelNames: ['mode'],
 });
 
+export const summaryRetrievalOutcomes = new Counter({
+  name: 'memos_summary_retrieval_outcomes_total',
+  help: 'Summary retrieval outcomes by agent and pass result',
+  labelNames: ['agent_id', 'outcome'],
+});
+
+export const summaryRetrievalSources = new Counter({
+  name: 'memos_summary_retrieval_sources_total',
+  help: 'Summary retrieval source and outcome by agent',
+  labelNames: ['agent_id', 'source', 'outcome'],
+});
+
 // Drill-down metrics
 export const drillDownCalls = new Counter({
   name: 'memos_drill_down_calls_total',
@@ -139,6 +157,80 @@ export const drillDownDuration = new Histogram({
   help: 'Duration of summary drill-down requests',
   labelNames: ['agent_id', 'outcome'],
   buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1, 2],
+});
+
+// LLM metrics for direct plugin-side calls
+export const llmRequests = new Counter({
+  name: 'memos_llm_requests_total',
+  help: 'Total number of direct LLM requests made by MEMOS',
+  labelNames: ['provider', 'source', 'use_case', 'model', 'status'],
+});
+
+export const llmInputTokens = new Counter({
+  name: 'memos_llm_input_tokens_total',
+  help: 'Total input tokens used by direct MEMOS LLM calls',
+  labelNames: ['provider', 'source', 'use_case', 'model'],
+});
+
+export const llmOutputTokens = new Counter({
+  name: 'memos_llm_output_tokens_total',
+  help: 'Total output tokens used by direct MEMOS LLM calls',
+  labelNames: ['provider', 'source', 'use_case', 'model'],
+});
+
+export const llmTotalTokens = new Counter({
+  name: 'memos_llm_total_tokens_total',
+  help: 'Total tokens used by direct MEMOS LLM calls',
+  labelNames: ['provider', 'source', 'use_case', 'model'],
+});
+
+export const llmDuration = new Histogram({
+  name: 'memos_llm_duration_seconds',
+  help: 'Duration of direct MEMOS LLM calls',
+  labelNames: ['provider', 'source', 'use_case', 'model'],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20],
+});
+
+export const llmEstimatedCostUsd = new Counter({
+  name: 'memos_llm_estimated_cost_usd_total',
+  help: 'Estimated USD cost for direct MEMOS LLM calls',
+  labelNames: ['provider', 'source', 'use_case', 'model'],
+});
+
+// OpenAI organization reporting metrics
+export const openAiUsageInputTokens = new Counter({
+  name: 'memos_openai_usage_input_tokens_total',
+  help: 'Total input tokens reported by the OpenAI usage API',
+  labelNames: ['source', 'use_case', 'model', 'project_id'],
+});
+
+export const openAiUsageOutputTokens = new Counter({
+  name: 'memos_openai_usage_output_tokens_total',
+  help: 'Total output tokens reported by the OpenAI usage API',
+  labelNames: ['source', 'use_case', 'model', 'project_id'],
+});
+
+export const openAiUsageRequests = new Counter({
+  name: 'memos_openai_usage_requests_total',
+  help: 'Total model requests reported by the OpenAI usage API',
+  labelNames: ['source', 'use_case', 'model', 'project_id'],
+});
+
+export const openAiBilledCostUsd = new Counter({
+  name: 'memos_openai_billed_cost_usd_total',
+  help: 'Total billed USD cost reported by the OpenAI costs API',
+  labelNames: ['source', 'use_case', 'line_item', 'project_id'],
+});
+
+export const openAiReportingLastSuccess = new Gauge({
+  name: 'memos_openai_reporting_last_success_timestamp_seconds',
+  help: 'Unix timestamp of the last successful OpenAI reporting poll',
+});
+
+export const openAiReportingErrors = new Counter({
+  name: 'memos_openai_reporting_errors_total',
+  help: 'Total OpenAI reporting API polling errors',
+  labelNames: ['endpoint', 'error_type'],
 });
 
 /**

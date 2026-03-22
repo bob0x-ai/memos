@@ -6,6 +6,7 @@ import {
   summaryGenerationErrors,
   summaryRequests,
 } from '../metrics/prometheus';
+import { estimateOpenAiCostUsd, observeLlmCall, parseChatCompletionUsage } from '../metrics/llm';
 import { logger } from './logger';
 
 const DEFAULT_SUMMARIZATION_SYSTEM_PROMPT =
@@ -14,7 +15,6 @@ const DEFAULT_SUMMARIZATION_SYSTEM_PROMPT =
 export interface SummaryCandidateFact {
   uuid?: string;
   fact: string;
-  content_type?: string;
   importance?: number;
   valid_at?: string;
   created_at?: string;
@@ -84,7 +84,6 @@ function buildFactsDigest(facts: SummaryCandidateFact[]): string {
   const canonical = facts.map(f => ({
     id: f.uuid || '',
     fact: f.fact,
-    content_type: f.content_type || 'fact',
     importance: typeof f.importance === 'number' ? f.importance : 3,
     timestamp: f.valid_at || f.created_at || '',
     department: f._department || '',
@@ -183,12 +182,12 @@ async function summarizeWithLLM(
   const timeoutMs = Number(process.env.MEMOS_SUMMARY_TIMEOUT_MS || 10000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
 
   try {
     const candidates = rankFacts(facts).slice(0, 20).map((fact, index) => ({
       id: fact.uuid || `fact-${index + 1}`,
       fact: String(fact.fact || '').slice(0, 500),
-      content_type: fact.content_type || 'fact',
       importance: typeof fact.importance === 'number' ? fact.importance : 3,
       department: fact._department || '',
     }));
@@ -226,13 +225,37 @@ async function summarizeWithLLM(
 
     const data = await response.json() as {
       choices?: Array<{ message?: { content?: string } }>;
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+      };
     };
+    const usage = parseChatCompletionUsage(data);
     const content = data.choices?.[0]?.message?.content || '';
     const parsed = parseSummaryResponse(content);
     if (!parsed) {
       throw new Error('Summary model returned invalid JSON');
     }
+    observeLlmCall({
+      source: 'plugin',
+      useCase: 'summarization',
+      model,
+      status: 'ok',
+      durationSeconds: (Date.now() - startedAt) / 1000,
+      usage,
+      estimatedCostUsd: estimateOpenAiCostUsd(model, usage),
+    });
     return parsed;
+  } catch (error) {
+    observeLlmCall({
+      source: 'plugin',
+      useCase: 'summarization',
+      model,
+      status: 'error',
+      durationSeconds: (Date.now() - startedAt) / 1000,
+    });
+    throw error;
   } finally {
     clearTimeout(timer);
   }

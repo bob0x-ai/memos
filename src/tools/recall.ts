@@ -3,9 +3,10 @@ import { MemosConfig } from '../config';
 import {
   COMPANY_DEPARTMENT_ID,
   getAgentConfig,
+  getCaptureGroupId,
   getCompanyDepartmentId,
   getDepartmentConfig,
-  getDepartmentsForRecall,
+  getGroupsForRecall,
 } from '../utils/config';
 import {
   crossDeptQueries,
@@ -17,8 +18,6 @@ import {
 } from '../metrics/prometheus';
 import { logger } from '../utils/logger';
 import { getSummaryDrillDown } from '../utils/summarization';
-import { classifyContent } from '../utils/classification';
-import { validateContentType, validateImportance } from '../ontology';
 
 function recordToolCall(tool: string, department: string): void {
   toolCalls.labels(tool, department).inc();
@@ -26,14 +25,6 @@ function recordToolCall(tool: string, department: string): void {
 
 function recordToolError(tool: string, department: string): void {
   toolErrors.labels(tool, department).inc();
-}
-
-function getAllowedAccessLevels(accessLevel: 'public' | 'restricted' | 'confidential'): string[] {
-  return accessLevel === 'confidential'
-    ? ['public', 'restricted', 'confidential']
-    : accessLevel === 'restricted'
-    ? ['public', 'restricted']
-    : ['public'];
 }
 
 /**
@@ -73,15 +64,15 @@ export async function memosRecallTool(
       };
     }
 
-    const departmentsToQuery = getDepartmentsForRecall(agentConfig);
+    const departmentsToQuery = getGroupsForRecall(ctx.agentId, agentConfig);
 
     if (departmentsToQuery.length === 0) {
-      logger.warn(`memos_recall denied: no department for agent ${ctx.agentId}`);
+      logger.warn(`memos_recall denied: no recall groups for agent ${ctx.agentId}`);
       recordToolError('memos_recall', requesterDept);
       return {
         success: false,
         facts: [],
-        error: `No department found for agent ${ctx.agentId}`,
+        error: `No recall groups found for agent ${ctx.agentId}`,
       };
     }
 
@@ -232,7 +223,7 @@ export async function memosDrillDownTool(
   success: boolean;
   summary_id: string;
   summary?: string;
-  facts: Array<{ uuid?: string; fact: string; content_type?: string; importance?: number; department?: string }>;
+  facts: Array<{ uuid?: string; fact: string; importance?: number; department?: string }>;
   error?: string;
 }> {
   const startTime = Date.now();
@@ -310,7 +301,6 @@ export async function memosDrillDownTool(
       facts: drillDown.data.facts.map(fact => ({
         uuid: fact.uuid,
         fact: fact.fact,
-        content_type: fact.content_type,
         importance: fact.importance,
         department: fact._department,
       })),
@@ -356,9 +346,6 @@ export async function memorySearchTool(
 export async function memoryStoreTool(
   params: {
     text: string;
-    content_type?: string;
-    importance?: number;
-    access_level?: 'public' | 'restricted' | 'confidential';
   },
   ctx: { agentId: string; userId?: string; sessionId?: string },
   config: MemosConfig,
@@ -366,10 +353,7 @@ export async function memoryStoreTool(
 ): Promise<{
   success: boolean;
   stored?: {
-    department: string;
-    content_type: string;
-    importance: number;
-    access_level: string;
+    group_id: string;
   };
   error?: string;
 }> {
@@ -393,11 +377,15 @@ export async function memoryStoreTool(
     };
   }
 
-  if (!agentConfig.department) {
+  const groupId = getCaptureGroupId(ctx.agentId, {
+    ...agentConfig,
+    capture: { ...agentConfig.capture, scope: 'private' },
+  });
+  if (!groupId) {
     recordToolError('memory_store', requesterDept);
     return {
       success: false,
-      error: `No department assigned for agent ${ctx.agentId}`,
+      error: `No storage group available for agent ${ctx.agentId}`,
     };
   }
 
@@ -407,33 +395,6 @@ export async function memoryStoreTool(
     return {
       success: false,
       error: 'text is required',
-    };
-  }
-
-  let contentType = params.content_type;
-  let importance = params.importance;
-
-  if (!contentType || importance === undefined) {
-    const classified = await classifyContent(text);
-    contentType = contentType || classified.content_type;
-    importance = importance ?? classified.importance;
-  }
-
-  if (!validateContentType(contentType)) {
-    contentType = 'fact';
-  }
-  if (!validateImportance(importance)) {
-    importance = 3;
-  }
-
-  const requestedAccess = params.access_level || agentConfig.access_level;
-  const allowedAccessLevels = getAllowedAccessLevels(agentConfig.access_level);
-
-  if (!allowedAccessLevels.includes(requestedAccess)) {
-    recordToolError('memory_store', requesterDept);
-    return {
-      success: false,
-      error: `access_level "${requestedAccess}" is not allowed for agent ${ctx.agentId}`,
     };
   }
 
@@ -448,30 +409,18 @@ export async function memoryStoreTool(
   ];
 
   const metadata = {
-    agent_id: ctx.agentId,
-    user_id: ctx.userId,
-    session_id: ctx.sessionId,
-    department: agentConfig.department,
-    access_level: requestedAccess,
-    content_type: contentType,
-    importance,
-    created_at: timestamp,
-    manual_store: true,
-    update_communities: true,
+    source_description: 'openclaw:manual_store',
   };
 
   try {
     await retryWithBackoff(
-      () => client.addMessages(agentConfig.department!, messages, metadata),
+      () => client.addMessages(groupId, messages, metadata),
       config.rate_limit_retries
     );
     return {
       success: true,
       stored: {
-        department: agentConfig.department,
-        content_type: contentType,
-        importance,
-        access_level: requestedAccess,
+        group_id: groupId,
       },
     };
   } catch (error) {
@@ -492,8 +441,6 @@ export async function memoryStoreTool(
 export async function memosAnnounceTool(
   params: {
     text: string;
-    content_type?: string;
-    importance?: number;
   },
   ctx: { agentId: string; userId?: string; sessionId?: string },
   config: MemosConfig,
@@ -501,11 +448,8 @@ export async function memosAnnounceTool(
 ): Promise<{
   success: boolean;
   stored?: {
-    department: string;
+    group_id: string;
     source_department: string;
-    content_type: string;
-    importance: number;
-    access_level: string;
   };
   error?: string;
 }> {
@@ -547,17 +491,6 @@ export async function memosAnnounceTool(
     };
   }
 
-  let contentType = params.content_type || 'decision';
-  let importance = params.importance ?? 4;
-  const requestedAccess = 'restricted';
-
-  if (!validateContentType(contentType)) {
-    contentType = 'decision';
-  }
-  if (!validateImportance(importance)) {
-    importance = 4;
-  }
-
   const timestamp = new Date().toISOString();
   const messages = [
     {
@@ -569,18 +502,7 @@ export async function memosAnnounceTool(
   ];
 
   const metadata = {
-    agent_id: ctx.agentId,
-    user_id: ctx.userId,
-    session_id: ctx.sessionId,
-    department: targetDepartment,
-    source_department: requesterConfig.department,
-    access_level: requestedAccess,
-    content_type: contentType,
-    importance,
-    created_at: timestamp,
-    manual_store: true,
-    announcement: true,
-    update_communities: true,
+    source_description: 'openclaw:department_announcement',
   };
 
   try {
@@ -591,11 +513,8 @@ export async function memosAnnounceTool(
     return {
       success: true,
       stored: {
-        department: targetDepartment,
+        group_id: targetDepartment,
         source_department: requesterConfig.department || 'unknown',
-        content_type: contentType,
-        importance,
-        access_level: requestedAccess,
       },
     };
   } catch (error) {
@@ -616,8 +535,6 @@ export async function memosAnnounceTool(
 export async function memosBroadcastTool(
   params: {
     text: string;
-    content_type?: string;
-    importance?: number;
   },
   ctx: { agentId: string; userId?: string; sessionId?: string },
   config: MemosConfig,
@@ -625,11 +542,8 @@ export async function memosBroadcastTool(
 ): Promise<{
   success: boolean;
   stored?: {
-    department: string;
+    group_id: string;
     source_department: string;
-    content_type: string;
-    importance: number;
-    access_level: string;
   };
   error?: string;
 }> {
@@ -670,17 +584,6 @@ export async function memosBroadcastTool(
     };
   }
 
-  let contentType = params.content_type || 'decision';
-  let importance = params.importance ?? 4;
-  const requestedAccess = 'public';
-
-  if (!validateContentType(contentType)) {
-    contentType = 'decision';
-  }
-  if (!validateImportance(importance)) {
-    importance = 4;
-  }
-
   const timestamp = new Date().toISOString();
   const messages = [
     {
@@ -692,29 +595,14 @@ export async function memosBroadcastTool(
   ];
 
   const metadata = {
-    agent_id: ctx.agentId,
-    user_id: ctx.userId,
-    session_id: ctx.sessionId,
-    department: companyDepartment,
-    source_department: requesterConfig.department,
-    access_level: requestedAccess,
-    content_type: contentType,
-    importance,
-    created_at: timestamp,
-    manual_store: true,
-    announcement: true,
-    broadcast: true,
-    update_communities: true,
+    source_description: 'openclaw:company_broadcast',
   };
 
   let result: {
     success: boolean;
     stored?: {
-      department: string;
+      group_id: string;
       source_department: string;
-      content_type: string;
-      importance: number;
-      access_level: string;
     };
     error?: string;
   };
@@ -726,11 +614,8 @@ export async function memosBroadcastTool(
     result = {
       success: true,
       stored: {
-        department: companyDepartment,
+        group_id: companyDepartment,
         source_department: requesterConfig.department || 'unknown',
-        content_type: contentType,
-        importance,
-        access_level: requestedAccess,
       },
     };
   } catch (error) {
@@ -837,7 +722,7 @@ export const toolDefinitions = [
   },
   {
     name: 'memory_store',
-    description: 'Store a fact or memory explicitly',
+    description: 'Store a private memory explicitly for the current agent',
     parameters: {
       type: 'object',
       properties: {
@@ -845,27 +730,13 @@ export const toolDefinitions = [
           type: 'string',
           description: 'Memory text to store',
         },
-        content_type: {
-          type: 'string',
-          description: 'Optional content type override',
-        },
-        importance: {
-          type: 'integer',
-          description: 'Optional importance override (1-5)',
-          minimum: 1,
-          maximum: 5,
-        },
-        access_level: {
-          type: 'string',
-          description: 'Optional access level override (must be allowed by role policy)',
-        },
       },
       required: ['text'],
     },
   },
   {
     name: 'memos_announce',
-    description: 'Publish a deliberate team announcement to caller department (management/confidential only)',
+    description: 'Publish a deliberate department-wide announcement to the caller department (management/confidential only)',
     parameters: {
       type: 'object',
       properties: {
@@ -873,39 +744,19 @@ export const toolDefinitions = [
           type: 'string',
           description: 'Announcement text to publish to team memory',
         },
-        content_type: {
-          type: 'string',
-          description: 'Optional content type (default: decision)',
-        },
-        importance: {
-          type: 'integer',
-          description: 'Optional importance override (default: 4)',
-          minimum: 1,
-          maximum: 5,
-        },
       },
       required: ['text'],
     },
   },
   {
     name: 'memos_broadcast',
-    description: 'Publish a deliberate company-wide broadcast (management/confidential only)',
+    description: 'Publish a deliberate company-wide broadcast to shared company memory (management/confidential only)',
     parameters: {
       type: 'object',
       properties: {
         text: {
           type: 'string',
           description: 'Broadcast text to publish to company memory',
-        },
-        content_type: {
-          type: 'string',
-          description: 'Optional content type (default: decision)',
-        },
-        importance: {
-          type: 'integer',
-          description: 'Optional importance override (default: 4)',
-          minimum: 1,
-          maximum: 5,
         },
       },
       required: ['text'],

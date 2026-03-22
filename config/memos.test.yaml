@@ -4,26 +4,19 @@ version: 2.0.0
 ontology:
   entity_types:
     - Person
-    - System
-    - Project
-    - Error
-    - Document
+    - Preference
+    - Requirement
+    - Procedure
+    - Location
+    - Event
     - Organization
-
-  content_types:
-    - fact
-    - decision
-    - preference
-    - learning
-    - summary
-    - sop
-    - warning
-    - contact
-
-  access_levels:
-    - public
-    - restricted
-    - confidential
+    - Service
+    - Project
+    - Issue
+    - Decision
+    - Document
+    - Topic
+    - Object
 
 departments:
   test-ops: {}
@@ -35,34 +28,41 @@ roles:
     access_level: restricted
     capture:
       enabled: true
+      # private -> agent_id, department -> agent.department, company -> shared company group
+      scope: department
     recall:
-      content_types: [fact, learning, warning, sop]
+      # mode=facts injects concrete recalled facts; mode=summary injects an executive summary
+      mode: facts
+      # self = own private agent_id group
+      # department = own department group
+      # company = shared company-wide group
+      # all_departments = all configured department groups, never other agents' private groups
+      scopes: [department, company]
       max_results: 5
-      reranker: rrf
       min_importance: 1
-      department_scope: own
 
   management:
     access_level: confidential
     capture:
       enabled: true
+      scope: private
     recall:
-      content_types: [summary]
+      mode: summary
+      # Add all_departments only for executives who should see cross-department auto-recall.
+      scopes: [self, department, company]
       max_results: 3
-      reranker: cross_encoder
       min_importance: 1
-      department_scope: all
 
   contractor:
     access_level: public
     capture:
       enabled: false
+      scope: company
     recall:
-      content_types: [summary, fact]
+      mode: facts
+      scopes: [company]
       max_results: 2
-      reranker: rrf
       min_importance: 1
-      department_scope: all
 
 agents:
   test-main:
@@ -98,26 +98,4 @@ llm:
   temperature: 0.1
   max_tokens: 100
   prompts:
-    classification_system: "You are a precise classifier. Return only requested output, with no extra text."
-    classification_user_template: |
-      Classify this conversation excerpt.
-
-      Choose one content_type:
-      - fact
-      - decision
-      - preference
-      - learning
-      - summary
-      - sop
-      - warning
-      - contact
-
-      Set importance as an integer 1-5:
-      1=trivial, 2=low, 3=medium, 4=high, 5=critical.
-
-      Return ONLY strict JSON with this exact shape:
-      {"content_type":"<one_of_types>","importance":<1_to_5>}
-
-      Excerpt: {content}
-    reranker_system: 'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.'
     summarization_system: 'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.'

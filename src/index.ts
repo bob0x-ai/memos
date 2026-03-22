@@ -6,6 +6,12 @@ import { resolveDepartment } from './utils/department';
 import { captureHook } from './hooks/capture';
 import { recallHook } from './hooks/recall';
 import {
+  isContextVisibilityEnabledForHook,
+  postVisibleContextMonitor,
+  resolveConversationKeysFromCommand,
+  setContextVisibility,
+} from './context-visibility';
+import {
   memosRecallTool,
   memosCrossDeptTool,
   memosDrillDownTool,
@@ -18,6 +24,7 @@ import {
   graphitiHealth,
   getMetrics,
 } from './metrics/prometheus';
+import { startOpenAiReporting } from './reporting/openai-reporting';
 import { logger } from './utils/logger';
 import { ensureBundledMemorySkillInstalled } from './utils/skill-installer';
 
@@ -30,6 +37,7 @@ type ToolRuntimeContext = {
   agentId: string;
   userId?: string;
   sessionId?: string;
+  sessionKey?: string;
 };
 
 function buildToolRuntimeContext(ctx: OpenClawPluginToolContext): ToolRuntimeContext {
@@ -37,6 +45,7 @@ function buildToolRuntimeContext(ctx: OpenClawPluginToolContext): ToolRuntimeCon
     agentId: ctx.agentId || 'unknown',
     userId: ctx.requesterSenderId,
     sessionId: ctx.sessionId,
+    sessionKey: (ctx as { sessionKey?: string }).sessionKey,
   };
 }
 
@@ -96,6 +105,9 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   // Initialize Graphiti client
   const client = new GraphitiClient({
     baseUrl: pluginConfig.graphiti_url,
+    mcpUrl: pluginConfig.graphiti_mcp_url,
+    backend: pluginConfig.graphiti_backend,
+    enableRestFallback: pluginConfig.graphiti_enable_rest_fallback,
     timeout: 30000,
   });
 
@@ -180,6 +192,7 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       logger.error('Unexpected error during Graphiti health check', error);
     }
   }, healthCheckIntervalMs);
+  const openAiReportingInterval = startOpenAiReporting();
 
   // Initial health check
   runHealthCheck('startup').then(() => {
@@ -210,6 +223,13 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
           pluginConfig,
           client
         );
+        const contextVisibilityEnabled = await isContextVisibilityEnabledForHook(api, ctx as any);
+        if (contextVisibilityEnabled && result.monitorAttempted) {
+          const monitorText = result.prependSystemContext
+            ? `MEMOS Context\n\n${result.prependSystemContext}`
+            : 'MEMOS Context\n\nNo relevant context found.';
+          await postVisibleContextMonitor(api, ctx as any, monitorText);
+        }
         if (result.prependSystemContext) {
           return { prependSystemContext: result.prependSystemContext };
         }
@@ -219,6 +239,38 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
       return;
     });
   }
+
+  api.registerCommand({
+    name: 'memos',
+    description: 'Toggle visible MEMOS context monitoring for this conversation',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const args = (ctx.args || '').trim().toLowerCase();
+      const conversationKeys = resolveConversationKeysFromCommand(ctx);
+      if (conversationKeys.length === 0) {
+        return {
+          text: 'MEMOS could not identify this conversation. Try again from a routable chat thread.',
+          isError: true,
+        };
+      }
+
+      if (args === 'context on') {
+        await setContextVisibility(api, conversationKeys, true);
+        return { text: 'MEMOS context monitoring is now on for this conversation.' };
+      }
+
+      if (args === 'context off') {
+        await setContextVisibility(api, conversationKeys, false);
+        return { text: 'MEMOS context monitoring is now off for this conversation.' };
+      }
+
+      return {
+        text: 'Usage: /memos context on|off',
+        isError: true,
+      };
+    },
+  });
 
   if (pluginConfig.auto_capture) {
     api.on("agent_end", async (event, ctx) => {
@@ -317,25 +369,17 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   // memory_store tool
   api.registerTool((ctx) => ({
     name: 'memory_store',
-    description: 'Store a fact or memory explicitly',
+    description: 'Store a private memory explicitly for the current agent',
     parameters: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Memory text to store' },
-        content_type: { type: 'string', description: 'Optional content type override' },
-        importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override' },
-        access_level: { type: 'string', description: 'Optional access level override' }
       },
       required: ['text'],
     },
     execute: async (_toolCallId, params) =>
       memoryStoreTool(
-        params as {
-          text: string;
-          content_type?: string;
-          importance?: number;
-          access_level?: 'public' | 'restricted' | 'confidential';
-        },
+        params as { text: string },
         buildToolRuntimeContext(ctx),
         pluginConfig,
         client
@@ -345,19 +389,17 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   // memos_announce tool
   api.registerTool((ctx) => ({
     name: 'memos_announce',
-    description: 'Publish deliberate team announcement to caller department with restricted access (management/confidential only)',
+    description: 'Publish a deliberate department-wide announcement to the caller department (management/confidential only)',
     parameters: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Announcement text to publish' },
-        content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
-        importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
       },
       required: ['text'],
     },
     execute: async (_toolCallId, params) =>
       memosAnnounceTool(
-        params as { text: string; content_type?: string; importance?: number },
+        params as { text: string },
         buildToolRuntimeContext(ctx),
         pluginConfig,
         client
@@ -367,19 +409,17 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   // memos_broadcast tool
   api.registerTool((ctx) => ({
     name: 'memos_broadcast',
-    description: 'Publish deliberate company-wide broadcast to company channel with public access (management/confidential only)',
+    description: 'Publish a deliberate company-wide broadcast to shared company memory (management/confidential only)',
     parameters: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Broadcast text to publish' },
-        content_type: { type: 'string', description: 'Optional content type override (default: decision)' },
-        importance: { type: 'integer', minimum: 1, maximum: 5, description: 'Optional importance override (default: 4)' }
       },
       required: ['text'],
     },
     execute: async (_toolCallId, params) =>
       memosBroadcastTool(
-        params as { text: string; content_type?: string; importance?: number },
+        params as { text: string },
         buildToolRuntimeContext(ctx),
         pluginConfig,
         client
@@ -412,9 +452,14 @@ function startPlugin(pluginConfig: MemosConfig, api: OpenClawPluginApi): void {
   });
 
   logger.info('Metrics endpoint registered at /plugins/memos/metrics');
+  logger.info(
+    `Graphiti backend configured: ${pluginConfig.graphiti_backend} ` +
+      `(rest_fallback=${pluginConfig.graphiti_enable_rest_fallback ? 'on' : 'off'})`,
+  );
 
   // Keep the interval reachable to prevent it from being optimized away.
   void healthCheckInterval;
+  void openAiReportingInterval;
 }
 
 function resolvePluginConfig(api: OpenClawPluginApi): MemosConfig {

@@ -24,13 +24,12 @@ describe('Metrics Integration', () => {
     getAgentConfig.mockReturnValue({
       department: 'ops',
       access_level: 'confidential',
-      capture: { enabled: true },
+      capture: { enabled: true, scope: 'private' },
       recall: {
-        content_types: ['summary'],
+        mode: 'summary',
+        scopes: ['self', 'department', 'company'],
         max_results: 5,
-        reranker: 'cross_encoder',
         min_importance: 1,
-        department_scope: 'all'
       }
     });
 
@@ -39,7 +38,7 @@ describe('Metrics Integration', () => {
       data: {
         summaryId: 'sum_metric1',
         summary: 'Summary text',
-        facts: [{ uuid: 'f1', fact: 'Detail A', content_type: 'fact', importance: 3 }],
+        facts: [{ uuid: 'f1', fact: 'Detail A', importance: 3 }],
         createdAtMs: Date.now(),
         expiresAtMs: Date.now() + 3600000,
       }

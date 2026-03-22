@@ -4,6 +4,9 @@ import { MemosConfig } from '../src/config';
 describe('resolveDepartment', () => {
   const config: MemosConfig = {
     graphiti_url: 'http://localhost:8000',
+    graphiti_backend: 'mcp',
+    graphiti_mcp_url: 'http://localhost:8001/mcp/',
+    graphiti_enable_rest_fallback: true,
     departments: {
       ops: ['main', 'mother', 'masa', 'scout'],
       devops: ['kernel', 'nyx', 'warden'],
@@ -43,6 +46,9 @@ describe('resolveDepartment', () => {
 describe('getDepartmentAgents', () => {
   const config: MemosConfig = {
     graphiti_url: 'http://localhost:8000',
+    graphiti_backend: 'mcp',
+    graphiti_mcp_url: 'http://localhost:8001/mcp/',
+    graphiti_enable_rest_fallback: true,
     departments: {
       ops: ['main', 'mother'],
       devops: ['kernel'],
@@ -68,6 +74,9 @@ describe('getDepartmentAgents', () => {
 describe('hasAgent', () => {
   const config: MemosConfig = {
     graphiti_url: 'http://localhost:8000',
+    graphiti_backend: 'mcp',
+    graphiti_mcp_url: 'http://localhost:8001/mcp/',
+    graphiti_enable_rest_fallback: true,
     departments: {
       ops: ['main'],
       devops: ['kernel'],

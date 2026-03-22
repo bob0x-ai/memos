@@ -72,6 +72,82 @@ This document lists all Prometheus metrics emitted by the MEMOS plugin.
   - `1`: healthy
   - `0`: unhealthy
 
+### `memos_backend_requests_total` (Counter)
+- Labels: `operation`, `backend`, `outcome`
+- Meaning: backend-specific Graphiti operations during the MCP-first migration.
+- Expected `backend` values:
+  - `mcp`
+  - `rest`
+- Expected `operation` values include:
+  - `add_messages`
+  - `search_facts`
+  - `get_memory`
+  - `detect_capabilities`
+  - `health_check`
+  - `clear`
+- Expected `outcome` values:
+  - `ok`
+  - `error`
+
+## Direct LLM Metrics
+
+### `memos_llm_requests_total` (Counter)
+- Labels: `provider`, `source`, `use_case`, `model`, `status`
+- Meaning: direct MEMOS LLM requests by outcome.
+
+### `memos_llm_input_tokens_total` (Counter)
+- Labels: `provider`, `source`, `use_case`, `model`
+- Meaning: direct MEMOS input tokens from OpenAI `usage`.
+
+### `memos_llm_output_tokens_total` (Counter)
+- Labels: `provider`, `source`, `use_case`, `model`
+- Meaning: direct MEMOS output tokens from OpenAI `usage`.
+
+### `memos_llm_total_tokens_total` (Counter)
+- Labels: `provider`, `source`, `use_case`, `model`
+- Meaning: direct MEMOS total tokens from OpenAI `usage`.
+
+### `memos_llm_duration_seconds` (Histogram)
+- Labels: `provider`, `source`, `use_case`, `model`
+- Meaning: direct MEMOS LLM latency.
+
+### `memos_llm_estimated_cost_usd_total` (Counter)
+- Labels: `provider`, `source`, `use_case`, `model`
+- Meaning: estimated USD cost for direct MEMOS LLM calls.
+
+Direct `use_case` values:
+- `summarization`
+
+## OpenAI Reporting Metrics
+
+### `memos_openai_usage_input_tokens_total` (Counter)
+- Labels: `source`, `use_case`, `model`, `project_id`
+- Meaning: token input totals from the OpenAI Usage API.
+
+### `memos_openai_usage_output_tokens_total` (Counter)
+- Labels: `source`, `use_case`, `model`, `project_id`
+- Meaning: token output totals from the OpenAI Usage API.
+
+### `memos_openai_usage_requests_total` (Counter)
+- Labels: `source`, `use_case`, `model`, `project_id`
+- Meaning: request totals from the OpenAI Usage API.
+
+### `memos_openai_billed_cost_usd_total` (Counter)
+- Labels: `source`, `use_case`, `line_item`, `project_id`
+- Meaning: billed USD cost totals from the OpenAI Costs API.
+
+### `memos_openai_reporting_last_success_timestamp_seconds` (Gauge)
+- Labels: none
+- Meaning: last successful OpenAI reporting poll timestamp.
+
+### `memos_openai_reporting_errors_total` (Counter)
+- Labels: `endpoint`, `error_type`
+- Meaning: reporting poll errors by endpoint and error class.
+
+Reporting `use_case` values:
+- `embedding`
+- `extraction`
+
 ## Summary Metrics
 
 ### `memos_summary_requests_total` (Counter)
@@ -141,3 +217,12 @@ This document lists all Prometheus metrics emitted by the MEMOS plugin.
 
 ### Is Graphiti unhealthy?
 - `memos_graphiti_health == 0`
+
+### Are direct MEMOS summarization tokens increasing?
+- `sum by (use_case, model) (rate(memos_llm_total_tokens_total[5m]))`
+
+### Is Graphiti generating embedding traffic?
+- `sum by (model) (rate(memos_openai_usage_input_tokens_total{use_case="embedding"}[15m]))`
+
+### Are billed Graphiti costs arriving?
+- `increase(memos_openai_billed_cost_usd_total[1d])`

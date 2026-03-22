@@ -1,11 +1,8 @@
 import { GraphitiClient, retryWithBackoff } from '../graphiti-client';
 import { MemosConfig } from '../config';
 import { getLastExchange, isWorthRemembering, prepareExchangeForCapture } from '../utils/filter';
-import { getAgentConfig } from '../utils/config';
-import { classifyContent } from '../utils/classification';
-import { validateContentType, validateImportance } from '../ontology';
+import { getAgentConfig, getCaptureGroupId } from '../utils/config';
 import { captureDuration, captureErrors, episodesCaptured, episodesFiltered } from '../metrics/prometheus';
-import { ClassificationResult } from '../types';
 import { logger } from '../utils/logger';
 
 /**
@@ -34,7 +31,6 @@ export async function captureHook(
     return;
   }
 
-  // Get agent configuration for access level
   const agentConfig = getAgentConfig(ctx.agentId);
   if (!agentConfig) {
     logger.warn(`No configuration found for agent ${ctx.agentId}`);
@@ -47,9 +43,9 @@ export async function captureHook(
     return;
   }
 
-  const department = agentConfig.department;
-  if (!department) {
-    logger.info(`No department assigned for agent ${ctx.agentId}; skipping capture`);
+  const captureGroupId = getCaptureGroupId(ctx.agentId, agentConfig);
+  if (!captureGroupId) {
+    logger.info(`No capture group resolved for agent ${ctx.agentId}; skipping capture`);
     episodesFiltered.labels('unknown').inc();
     return;
   }
@@ -59,7 +55,7 @@ export async function captureHook(
   
   if (!lastUser || !lastAssistant) {
     logger.warn('Could not find complete user-assistant exchange');
-    episodesFiltered.labels(department).inc();
+    episodesFiltered.labels(captureGroupId).inc();
     return;
   }
 
@@ -68,7 +64,7 @@ export async function captureHook(
     logger.info(
       `Exchange filtered before capture for agent ${ctx.agentId} (${preparedExchange.reason || 'unknown_reason'})`
     );
-    episodesFiltered.labels(department).inc();
+    episodesFiltered.labels(captureGroupId).inc();
     return;
   }
 
@@ -78,35 +74,9 @@ export async function captureHook(
   // Check if exchange is worth remembering
   if (!isWorthRemembering(sanitizedUser, sanitizedAssistant)) {
     logger.info(`Exchange filtered as trivial, not capturing for agent ${ctx.agentId}`);
-    episodesFiltered.labels(department).inc();
+    episodesFiltered.labels(captureGroupId).inc();
     return;
   }
-
-  // Build content for classification
-  const content = `${sanitizedUser}\nAssistant: ${sanitizedAssistant}`;
-
-  // Classify content (Phase 7: content type + importance)
-  logger.debug('Classifying captured content');
-  let classification: ClassificationResult;
-  try {
-    classification = await classifyContent(content);
-  } catch (error) {
-    logger.warn('Content classification failed, using defaults', error);
-    classification = { content_type: 'fact', importance: 3 };
-  }
-
-  // Validate classification results
-  if (!validateContentType(classification.content_type)) {
-    logger.warn(`Invalid content type: ${classification.content_type}, defaulting to 'fact'`);
-    classification.content_type = 'fact';
-  }
-
-  if (!validateImportance(classification.importance)) {
-    logger.warn(`Invalid importance: ${classification.importance}, defaulting to 3`);
-    classification.importance = 3;
-  }
-
-  logger.debug(`Classified as ${classification.content_type} (importance: ${classification.importance})`);
 
   const timestamp = new Date().toISOString();
   const messages = [
@@ -126,31 +96,22 @@ export async function captureHook(
 
   // Build metadata for Graphiti (Phase 7: enriched metadata)
   const metadata = {
-    agent_id: ctx.agentId,
-    user_id: ctx.userId,
-    session_id: ctx.sessionId,
-    department: department,
-    access_level: agentConfig.access_level,
-    content_type: classification.content_type,
-    importance: classification.importance,
-    created_at: timestamp,
-    update_communities: true  // Enable community detection
+    source_description: 'openclaw:auto_capture',
   };
 
   try {
     // Send to Graphiti with retry logic and metadata
     await retryWithBackoff(
-      () => client.addMessages(department, messages, metadata),
+      () => client.addMessages(captureGroupId, messages, metadata),
       config.rate_limit_retries
     );
 
-    episodesCaptured.labels(department, ctx.agentId).inc();
-    captureDuration.labels(department).observe((Date.now() - startTime) / 1000);
-    logger.info(`Captured episode for agent ${ctx.agentId} in department ${department} ` +
-      `(${classification.content_type}, importance: ${classification.importance})`);
+    episodesCaptured.labels(captureGroupId, ctx.agentId).inc();
+    captureDuration.labels(captureGroupId).observe((Date.now() - startTime) / 1000);
+    logger.info(`Captured episode for agent ${ctx.agentId} in group ${captureGroupId}`);
   } catch (error) {
-    captureErrors.labels(department, 'store_failed').inc();
-    captureDuration.labels(department).observe((Date.now() - startTime) / 1000);
+    captureErrors.labels(captureGroupId, 'store_failed').inc();
+    captureDuration.labels(captureGroupId).observe((Date.now() - startTime) / 1000);
     logger.error('Failed to capture episode', error);
     // Log but don't throw - we don't want to break the agent run
   }

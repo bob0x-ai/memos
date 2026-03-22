@@ -27,7 +27,7 @@ Both plugins expose Prometheus-compatible metrics at `/metrics` endpoints, but w
 
 ## MEMOS Metrics Endpoint
 
-**Endpoint:** `http://localhost:8000/metrics` (Graphiti server)
+**Endpoint:** `http://localhost:18789/plugins/memos/metrics` (MEMOS plugin route)
 
 ### Metric Categories
 
@@ -45,15 +45,17 @@ Both plugins expose Prometheus-compatible metrics at `/metrics` endpoints, but w
 | **Tools** | `memos_tool_errors_total` | Tool errors (tool, department) |
 | **Health** | `memos_graphiti_health` | Server health (gauge: 1=healthy, 0=unhealthy) |
 | **Cross-dept** | `memos_cross_dept_queries_total` | Cross-department queries (source_dept, target_dept) |
+| **Direct LLM** | `memos_llm_*` | Plugin-side request, token, latency, estimated-cost metrics |
+| **OpenAI Reporting** | `memos_openai_*` | Graphiti project usage and billed-cost metrics from OpenAI APIs |
 
 ## Key Differences
 
 | Aspect | Nemos2 | MEMOS |
 |--------|--------|-------|
 | **Server** | In-plugin (Node.js/TypeScript) | Graphiti server (Python/FastAPI) |
-| **Port** | 9464 (configurable) | 8000 (Graphiti default) |
+| **Port** | 9464 (configurable) | 18789 via OpenClaw plugin route |
 | **Metric Prefix** | `memory_*` | `memos_*` |
-| **LLM Token Tracking** | ✅ Detailed (input/output/cached) | ❌ Not tracked (done externally) |
+| **LLM Token Tracking** | ✅ Detailed (input/output/cached) | ✅ Direct plugin calls + Graphiti reporting |
 | **Queue Metrics** | ✅ Isolated queues (raw, vector) | ❌ No queue - async extraction |
 | **Qdrant Metrics** | ✅ All operations tracked | ❌ abstraction layer |
 | **Embedding Dimensions** | Hardcoded (768) | Configurable (1024 reduction) |
@@ -66,7 +68,7 @@ When switching from Nemos2 to MEMOS:
 
 1. **Update Grafana dashboards** to use `memos_*` instead of `memory_*`
 2. **Alert rules** need metric name changes
-3. **Token tracking** - MEMOS delegates to OpenAI API key usage (monitor via OpenAI dashboard)
+3. **Token tracking** - MEMOS now exposes direct plugin LLM token metrics and Graphiti project usage from OpenAI reporting
 4. **Queue metrics** - MEMOS doesn't have persistent queues; extraction is async
 
 ## Example Metrics Output
@@ -108,14 +110,15 @@ memos_tool_calls_total{tool="memos_recall",department="ops"} 50
 |--------------|------------------|
 | Memory Operations | `memos_episodes_captured_total` + `memos_recalls_operations_total` |
 | Queue Depth | N/A (no queue in MEMOS) |
-| Embedding Tokens | Check OpenAI dashboard |
+| Embedding Tokens | `memos_openai_usage_input_tokens_total{use_case="embedding"}` |
 | Qdrant Health | `memos_graphiti_health` + `memos_capture_errors_total` |
 | Search Success Rate | `memos_recall_operations_total` with status labels (if added) |
 
 ## Recommendation
 
 For monitoring MEMOS:
-1. Use **OpenAI dashboard** for token tracking
-2. Monitor **Graphiti logs** for extraction errors
-3. Track `memos_capture_errors_total` and `memos_recalls_errors_total` for issues
-4. Use `memos_graphiti_health` for overall system health
+1. Use `memos_llm_*` for direct plugin LLM activity
+2. Use `memos_openai_*` for Graphiti project usage and billed cost
+3. Monitor **Graphiti logs** for extraction errors
+4. Track `memos_capture_errors_total` and `memos_recalls_errors_total` for issues
+5. Use `memos_graphiti_health` for overall system health

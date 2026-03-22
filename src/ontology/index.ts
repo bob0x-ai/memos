@@ -1,23 +1,20 @@
-import { ClassificationResult, MemosNode } from '../types';
-
-export const CONTENT_TYPES = [
-  'fact',
-  'decision',
-  'preference',
-  'learning',
-  'summary',
-  'sop',
-  'warning',
-  'contact'
-] as const;
+import { MemosNode } from '../types';
 
 export const ENTITY_TYPES = [
   'Person',
-  'System',
+  'Preference',
+  'Requirement',
+  'Procedure',
+  'Location',
+  'Event',
+  'Organization',
+  'Service',
   'Project',
-  'Error',
+  'Issue',
+  'Decision',
   'Document',
-  'Organization'
+  'Topic',
+  'Object'
 ] as const;
 
 export const ACCESS_LEVELS = ['public', 'restricted', 'confidential'] as const;
@@ -43,10 +40,6 @@ export function getAccessFilter(agentAccessLevel: string): string[] {
   return ACCESS_LEVEL_HIERARCHY[agentAccessLevel] || ['public'];
 }
 
-export function validateContentType(contentType: string): boolean {
-  return CONTENT_TYPES.includes(contentType as any);
-}
-
 export function validateEntityType(entityType: string): boolean {
   return ENTITY_TYPES.includes(entityType as any);
 }
@@ -60,18 +53,13 @@ export function validateImportance(importance: number): boolean {
 }
 
 export function createNodeProperties(
-  classification: ClassificationResult,
-  agentConfig: { agentId: string; accessLevel: string; department: string },
+  agentConfig: { agentId: string; groupId: string },
   episodeId: string
 ): Partial<MemosNode> {
   return {
-    content_type: classification.content_type as any,
-    entity_type: classification.entity_type as any,
-    access_level: agentConfig.accessLevel as any,
-    importance: classification.importance as any,
     source_agent: agentConfig.agentId,
     source_episode: episodeId,
-    group_id: agentConfig.department,
+    group_id: agentConfig.groupId,
     created_at: new Date(),
     updated_at: new Date()
   };

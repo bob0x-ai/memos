@@ -2,8 +2,17 @@
  * MEMOS plugin configuration
  */
 export interface MemosConfig {
-  /** URL of the Graphiti server */
+  /** Legacy REST URL of the Graphiti server */
   graphiti_url: string;
+
+  /** Preferred Graphiti backend mode */
+  graphiti_backend: 'mcp' | 'rest';
+
+  /** URL of the Graphiti MCP endpoint */
+  graphiti_mcp_url: string;
+
+  /** Whether REST should be used as a fallback during MCP rollout */
+  graphiti_enable_rest_fallback: boolean;
 
   /** Deprecated: department policy now lives in config/memos.config.yaml */
   departments?: Record<string, string[]>;
@@ -32,6 +41,9 @@ export interface MemosConfig {
  */
 export const defaultConfig: Partial<MemosConfig> = {
   graphiti_url: 'http://localhost:8000',
+  graphiti_backend: 'mcp',
+  graphiti_mcp_url: 'http://localhost:8001/mcp/',
+  graphiti_enable_rest_fallback: true,
   sop_search_enabled: false,
   sop_path: '~/.openclaw/workspace/sop',
   auto_capture: true,
@@ -68,9 +80,24 @@ export function validateConfig(config: unknown): asserts config is MemosConfig {
   if (c.graphiti_url !== undefined && typeof c.graphiti_url !== 'string') {
     throw new Error('graphiti_url must be a string');
   }
+  if (
+    c.graphiti_backend !== undefined &&
+    c.graphiti_backend !== 'mcp' &&
+    c.graphiti_backend !== 'rest'
+  ) {
+    throw new Error('graphiti_backend must be "mcp" or "rest"');
+  }
+  if (c.graphiti_mcp_url !== undefined && typeof c.graphiti_mcp_url !== 'string') {
+    throw new Error('graphiti_mcp_url must be a string');
+  }
 
   // Check other numeric/boolean fields
-  const booleanFields = ['sop_search_enabled', 'auto_capture', 'auto_recall'];
+  const booleanFields = [
+    'sop_search_enabled',
+    'auto_capture',
+    'auto_recall',
+    'graphiti_enable_rest_fallback',
+  ];
   for (const field of booleanFields) {
     if (c[field] !== undefined && typeof c[field] !== 'boolean') {
       throw new Error(`${field} must be a boolean`);

@@ -1,14 +1,18 @@
-import { GraphitiClient } from '../graphiti-client';
+import { GraphitiClient, NodeResult } from '../graphiti-client';
 import { MemosConfig } from '../config';
-import { getAgentConfig, getDepartmentsForRecall, loadConfig } from '../utils/config';
-import { getAccessFilter } from '../ontology';
-import { recallDuration, recallErrors, recallOperations, recallResults, summaryModeSelections } from '../metrics/prometheus';
+import { getAgentConfig, getGroupsForRecall, loadConfig } from '../utils/config';
+import {
+  recallDuration,
+  recallErrors,
+  recallOperations,
+  recallResults,
+  summaryModeSelections,
+  summaryRetrievalOutcomes,
+  summaryRetrievalSources,
+} from '../metrics/prometheus';
 import { logger } from '../utils/logger';
 import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
-import { prepareMessagesForRecall } from '../utils/filter';
-
-const DEFAULT_RERANKER_SYSTEM_PROMPT =
-  'You are a relevance reranker. Return ONLY JSON: {"ranked_ids":[...]} ordered best to worst.';
+import { containsDurableSignal, isLowSignalFact, prepareMessagesForRecall } from '../utils/filter';
 
 /**
  * Format search results into context for the agent
@@ -21,7 +25,6 @@ export function formatFactsAsContext(
     fact: string;
     valid_at?: string;
     invalid_at?: string;
-    content_type?: string;
     importance?: number;
   }>
 ): string {
@@ -31,32 +34,29 @@ export function formatFactsAsContext(
 
   let context = '## Relevant Context from Memory\n\n';
 
-  // Group by content type
-  const grouped = facts.reduce((acc, fact) => {
-    const type = fact.content_type || 'fact';
-    if (!acc[type]) acc[type] = [];
-    acc[type].push(fact);
-    return acc;
-  }, {} as Record<string, typeof facts>);
-
-  // Add facts grouped by type with importance indicators
-  for (const [type, typeFacts] of Object.entries(grouped)) {
-    context += `**${type.charAt(0).toUpperCase() + type.slice(1)}s:**\n`;
-    for (const fact of typeFacts) {
-      const importance = '⭐'.repeat(fact.importance || 3);
-      context += `- ${importance} ${fact.fact}`;
-      if (fact.valid_at) {
-        context += ` (valid from ${new Date(fact.valid_at).toLocaleDateString()})`;
-      }
-      if (fact.invalid_at) {
-        context += ` (invalid since ${new Date(fact.invalid_at).toLocaleDateString()})`;
-      }
-      context += '\n';
+  for (const fact of facts) {
+    const importance = '⭐'.repeat(fact.importance || 3);
+    context += `- ${importance} ${fact.fact}`;
+    if (fact.valid_at) {
+      context += ` (valid from ${new Date(fact.valid_at).toLocaleDateString()})`;
+    }
+    if (fact.invalid_at) {
+      context += ` (invalid since ${new Date(fact.invalid_at).toLocaleDateString()})`;
     }
     context += '\n';
   }
 
   return context;
+}
+
+function suppressLowSignalFacts<T extends { fact?: string }>(facts: T[]): T[] {
+  return facts.filter((fact) => {
+    const text = typeof fact.fact === 'string' ? fact.fact.trim() : '';
+    if (!text) {
+      return false;
+    }
+    return !isLowSignalFact(text);
+  });
 }
 
 /**
@@ -83,204 +83,280 @@ export function buildQueryFromMessages(
   return userMessages[userMessages.length - 1];
 }
 
-/**
- * Rerank results using RRF (Reciprocal Rank Fusion)
- * @param results Array of results to rerank
- * @param limit Maximum number of results to return
- * @returns Reranked results
- */
-export function rrfRerank(
-  results: any[],
-  limit: number
-): any[] {
-  if (results.length === 0) {
-    return [];
+function normalizeQuerySnippet(content: string, maxLength: number = 160): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return '';
   }
-
-  const k = 60; // RRF constant
-
-  const withMeta = results.map((result, index) => ({
-    result,
-    index,
-    key: result.uuid || `idx:${index}`,
-  }));
-
-  const byRetrieval = [...withMeta];
-  const byImportance = [...withMeta].sort((a, b) => {
-    const importanceA = typeof a.result.importance === 'number' ? a.result.importance : 3;
-    const importanceB = typeof b.result.importance === 'number' ? b.result.importance : 3;
-    if (importanceA !== importanceB) {
-      return importanceB - importanceA;
-    }
-    return a.index - b.index;
-  });
-
-  const byRecency = [...withMeta].sort((a, b) => {
-    const recencyA = Date.parse(a.result.valid_at || a.result.created_at || '');
-    const recencyB = Date.parse(b.result.valid_at || b.result.created_at || '');
-    const safeA = Number.isNaN(recencyA) ? 0 : recencyA;
-    const safeB = Number.isNaN(recencyB) ? 0 : recencyB;
-    if (safeA !== safeB) {
-      return safeB - safeA;
-    }
-    return a.index - b.index;
-  });
-
-  const rankings = [byRetrieval, byImportance, byRecency];
-  const scoreByKey = new Map<string, number>();
-
-  for (const ranking of rankings) {
-    ranking.forEach((entry, rankIndex) => {
-      const rank = rankIndex + 1;
-      const prev = scoreByKey.get(entry.key) || 0;
-      scoreByKey.set(entry.key, prev + 1 / (k + rank));
-    });
+  if (normalized.length <= maxLength) {
+    return normalized;
   }
-
-  const scored = withMeta.map(entry => ({
-    result: entry.result,
-    score: scoreByKey.get(entry.key) || 0,
-    index: entry.index,
-  }));
-
-  scored.sort((a, b) => {
-    if (b.score !== a.score) {
-      return b.score - a.score;
-    }
-    return a.index - b.index;
-  });
-
-  return scored.slice(0, limit).map(s => s.result);
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
-function parseRankedIds(content: string): string[] {
-  try {
-    const parsed = JSON.parse(content);
-    if (Array.isArray(parsed)) {
-      return parsed.map(String);
+function uniqueSnippets(snippets: string[]): string[] {
+  const seen = new Set<string>();
+  const results: string[] = [];
+
+  for (const snippet of snippets) {
+    const normalized = normalizeQuerySnippet(snippet);
+    if (!normalized) {
+      continue;
     }
-    if (parsed && Array.isArray(parsed.ranked_ids)) {
-      return parsed.ranked_ids.map(String);
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
     }
-  } catch {
-    // Fall through to regex extraction below.
+    seen.add(key);
+    results.push(normalized);
   }
 
-  const objectMatch = content.match(/\{[\s\S]*\}/);
-  if (objectMatch) {
-    try {
-      const parsed = JSON.parse(objectMatch[0]);
-      if (parsed && Array.isArray(parsed.ranked_ids)) {
-        return parsed.ranked_ids.map(String);
-      }
-    } catch {
-      // Ignore and continue.
-    }
-  }
-
-  return [];
+  return results;
 }
 
-export async function crossEncoderRerank(
-  results: any[],
+export function buildManagementRecallQueries(
+  messages: Array<{ role: string; content: string }>,
+): { primaryQuery: string; fallbackQuery: string } {
+  const recentMessages = messages.slice(-4);
+  const lastUserMessage = [...recentMessages].reverse().find((message) => message.role === 'user');
+  const baseUserQuery = normalizeQuerySnippet(lastUserMessage?.content || '');
+  if (!baseUserQuery) {
+    return { primaryQuery: '', fallbackQuery: '' };
+  }
+
+  const durableAssistantContext = uniqueSnippets(
+    recentMessages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => message.content)
+      .filter((content) => containsDurableSignal(content))
+      .slice(-2),
+  );
+
+  const primaryParts = uniqueSnippets([baseUserQuery, ...durableAssistantContext]);
+  const primaryQuery = primaryParts.join('\n');
+
+  const broaderContext = uniqueSnippets(
+    recentMessages
+      .map((message) => message.content)
+      .filter((content) => content && content.trim().length > 0)
+      .slice(-4),
+  );
+  const fallbackParts = uniqueSnippets([baseUserQuery, ...broaderContext]);
+  const fallbackQuery = fallbackParts.join('\n');
+
+  return {
+    primaryQuery,
+    fallbackQuery,
+  };
+}
+
+async function searchFactsAcrossDepartments(
+  client: GraphitiClient,
+  departmentsToQuery: string[],
   query: string,
   limit: number,
-  model: string,
-  systemPrompt: string = DEFAULT_RERANKER_SYSTEM_PROMPT
 ): Promise<any[]> {
-  if (results.length === 0) {
+  const factsByDepartment = await Promise.allSettled(
+    departmentsToQuery.map(async (dept) => ({
+      department: dept,
+      facts: await client.searchFacts(dept, query, limit),
+    })),
+  );
+
+  const allFacts: any[] = [];
+  for (const result of factsByDepartment) {
+    if (result.status === 'fulfilled') {
+      const { department: sourceDepartment, facts } = result.value;
+      allFacts.push(...facts.map((fact: any) => ({ ...fact, _department: sourceDepartment })));
+    } else {
+      logger.warn(
+        'Recall failed for one department; continuing with remaining departments',
+        result.reason,
+      );
+    }
+  }
+
+  return allFacts;
+}
+
+type NodeSearchResultWithDepartment = NodeResult & { _department: string };
+
+async function searchNodesAcrossDepartments(
+  client: GraphitiClient,
+  departmentsToQuery: string[],
+  query: string,
+  limit: number,
+  options?: {
+    entityTypes?: string[];
+  },
+): Promise<NodeSearchResultWithDepartment[]> {
+  const nodesByDepartment = await Promise.allSettled(
+    departmentsToQuery.map(async (dept) => ({
+      department: dept,
+      nodes: await client.searchNodes(dept, query, limit, options),
+    })),
+  );
+
+  const allNodes: NodeSearchResultWithDepartment[] = [];
+  for (const result of nodesByDepartment) {
+    if (result.status === 'fulfilled') {
+      const { department: sourceDepartment, nodes } = result.value;
+      allNodes.push(
+        ...nodes.map((node) => ({
+          ...node,
+          _department: sourceDepartment,
+        })),
+      );
+    } else {
+      logger.warn(
+        'Recall node search failed for one department; continuing with remaining departments',
+        result.reason,
+      );
+    }
+  }
+
+  return allNodes;
+}
+
+function selectCenterNodes(
+  nodes: NodeSearchResultWithDepartment[],
+  maxCenters: number = 3,
+): NodeSearchResultWithDepartment[] {
+  const selected: NodeSearchResultWithDepartment[] = [];
+  const seen = new Set<string>();
+
+  for (const node of nodes) {
+    if (!node.uuid) {
+      continue;
+    }
+    const text = node.summary?.trim() || node.name?.trim() || '';
+    if (!text || isLowSignalFact(text)) {
+      continue;
+    }
+    if (seen.has(node.uuid)) {
+      continue;
+    }
+    seen.add(node.uuid);
+    selected.push(node);
+    if (selected.length >= maxCenters) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
+async function searchCenteredFactsFromNodes(
+  client: GraphitiClient,
+  nodes: NodeSearchResultWithDepartment[],
+  query: string,
+  limit: number,
+): Promise<any[]> {
+  const centerNodes = selectCenterNodes(nodes);
+  if (centerNodes.length === 0) {
     return [];
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    logger.warn('OPENAI_API_KEY not set, falling back to local RRF reranking');
-    return rrfRerank(results, limit);
+  const centeredSearches = await Promise.allSettled(
+    centerNodes.map(async (node) => {
+      const department = node.group_id || node._department;
+      return {
+        centerNodeUuid: node.uuid,
+        department,
+        facts: await client.searchFacts(
+          department,
+          query,
+          limit,
+          { centerNodeUuid: node.uuid },
+        ),
+      };
+    }),
+  );
+
+  const allFacts: any[] = [];
+  for (const result of centeredSearches) {
+    if (result.status === 'fulfilled') {
+      const { centerNodeUuid, department, facts } = result.value;
+      allFacts.push(
+        ...facts.map((fact: any) => ({
+          ...fact,
+          _department: department,
+          _center_node_uuid: centerNodeUuid,
+        })),
+      );
+    } else {
+      logger.warn('Recall centered fact search failed for one node; continuing', result.reason);
+    }
   }
 
-  const candidates = results.map((result, index) => ({
-    id: result.uuid || `idx:${index}`,
-    fact: String(result.fact || '').slice(0, 400),
-    content_type: result.content_type || 'fact',
-    importance: typeof result.importance === 'number' ? result.importance : 3,
-    valid_at: result.valid_at || result.created_at || null,
-    original: result,
-    index,
-  }));
+  return allFacts;
+}
 
-  const payload = {
-    query,
-    candidates: candidates.map(c => ({
-      id: c.id,
-      fact: c.fact,
-      content_type: c.content_type,
-      importance: c.importance,
-      valid_at: c.valid_at,
-    })),
-    max_results: limit,
-  };
+function filterAndCleanFacts(params: {
+  allFacts: any[];
+  minImportance: number;
+}): any[] {
+  const filteredFacts = params.allFacts.filter((fact: any) => {
+    const importance = typeof fact.importance === 'number' ? fact.importance : 3;
+    return importance >= params.minImportance;
+  });
 
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 300,
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: JSON.stringify(payload),
-          },
-        ],
-      }),
+  const dedupedFacts: any[] = [];
+  const seen = new Set<string>();
+  for (const fact of filteredFacts) {
+    const key = fact.uuid || `${fact._department || 'unknown'}:${fact.fact}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    dedupedFacts.push(fact);
+  }
+
+  return suppressLowSignalFacts(dedupedFacts);
+}
+
+function nodesToSummaryCandidates(
+  nodes: Array<NodeResult & { _department?: string }>,
+): Array<{
+  uuid: string;
+  fact: string;
+  importance: number;
+  created_at: string;
+  _department?: string;
+}> {
+  const deduped: Array<{
+    uuid: string;
+    fact: string;
+    importance: number;
+    created_at: string;
+    _department?: string;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const node of nodes) {
+    const name = node.name.trim();
+    const summary = node.summary.trim();
+    const fact = summary && name ? `${name}: ${summary}` : summary || name;
+    if (!fact) {
+      continue;
+    }
+
+    const key = node.uuid || `${node._department || 'unknown'}:${fact}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    deduped.push({
+      uuid: node.uuid,
+      fact,
+      importance: 3,
+      created_at: node.created_at,
+      _department: node._department,
     });
-
-    if (!response.ok) {
-      throw new Error(`Reranker API error: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-
-    const content = data.choices?.[0]?.message?.content || '';
-    const rankedIds = parseRankedIds(content);
-    if (rankedIds.length === 0) {
-      throw new Error('Reranker did not return ranked_ids');
-    }
-
-    const byId = new Map(candidates.map(c => [c.id, c]));
-    const ordered: any[] = [];
-    const seen = new Set<string>();
-
-    for (const id of rankedIds) {
-      const candidate = byId.get(id);
-      if (candidate && !seen.has(id)) {
-        seen.add(id);
-        ordered.push(candidate.original);
-      }
-    }
-
-    for (const candidate of candidates) {
-      if (!seen.has(candidate.id)) {
-        ordered.push(candidate.original);
-      }
-    }
-
-    return ordered.slice(0, limit);
-  } catch (error) {
-    logger.warn('Cross-encoder reranker failed, falling back to local RRF', error);
-    return rrfRerank(results, limit);
   }
+
+  return suppressLowSignalFacts(deduped);
 }
 
 /**
@@ -299,7 +375,7 @@ export async function recallHook(
   },
   config: MemosConfig,
   client: GraphitiClient
-): Promise<{ prependSystemContext?: string }> {
+): Promise<{ prependSystemContext?: string; monitorAttempted?: boolean }> {
   const startTime = Date.now();
   // Check if auto-recall is enabled
   if (!config.auto_recall) {
@@ -315,109 +391,125 @@ export async function recallHook(
   }
   const runtimeConfig = loadConfig();
 
-  const department = agentConfig.department;
-  const departmentLabel = department || 'all';
+  const departmentLabel = agentConfig.department || 'all';
   recallOperations.labels(departmentLabel, ctx.agentId).inc();
   const recallLimit = Math.min(config.recall_limit, agentConfig.recall.max_results);
 
-  const departmentsToQuery = getDepartmentsForRecall(agentConfig);
+  const groupsToQuery = getGroupsForRecall(ctx.agentId, agentConfig);
 
-  if (departmentsToQuery.length === 0) {
-    logger.warn(`No departments available for recall (agent: ${ctx.agentId})`);
+  if (groupsToQuery.length === 0) {
+    logger.warn(`No groups available for recall (agent: ${ctx.agentId})`);
     return {};
   }
 
-  // Build access filter (Phase 7: permission scoping)
-  const allowedAccessLevels = getAccessFilter(agentConfig.access_level);
-  const allowedContentTypes = agentConfig.recall.content_types;
-  const summaryOnlyMode =
-    allowedContentTypes.length === 1 && allowedContentTypes[0] === 'summary';
-  const retrievalContentTypes = summaryOnlyMode
-    ? runtimeConfig.ontology.content_types.filter(type => type !== 'summary')
-    : allowedContentTypes;
+  const summaryOnlyMode = agentConfig.recall.mode === 'summary';
   const minImportance = agentConfig.recall.min_importance;
 
-  logger.debug(`Recalling for agent ${ctx.agentId} (access: ${agentConfig.access_level})`);
-  logger.debug(`Allowed access levels: ${allowedAccessLevels.join(', ')}`);
+  logger.debug(`Recalling for agent ${ctx.agentId} with groups: ${groupsToQuery.join(', ')}`);
   logger.debug(`Recall mode: ${summaryOnlyMode ? 'summary-only' : 'detailed-facts'}`);
-  logger.debug(`Allowed content types: ${allowedContentTypes.join(', ')}`);
-  logger.debug(`Retrieval content types: ${retrievalContentTypes.join(', ')}`);
   logger.debug(`Minimum importance: ${minImportance}`);
 
   const recallMessages = prepareMessagesForRecall(ctx.messages, 3);
 
   // Build query from recent messages
-  const query = buildQueryFromMessages(recallMessages);
+  const workerQuery = buildQueryFromMessages(recallMessages);
+  const managementQueries = summaryOnlyMode
+    ? buildManagementRecallQueries(recallMessages)
+    : { primaryQuery: '', fallbackQuery: '' };
+  const query = summaryOnlyMode ? managementQueries.primaryQuery : workerQuery;
   if (!query) {
     logger.debug(`No user query extracted for agent ${ctx.agentId}, skipping recall`);
     return {};
   }
 
   try {
-    // Convert messages to Graphiti format
-    const graphitiMessages = recallMessages.map(m => ({
-      content: m.content,
-      role_type: m.role as 'user' | 'assistant' | 'system',
-      role: m.role,
-    }));
-
-    const memoryByDepartment = await Promise.allSettled(
-      departmentsToQuery.map(async dept => ({
-        department: dept,
-        memory: await client.getMemory(
-          dept,
-          graphitiMessages,
-          recallLimit * 2,
-          {
-            access_levels: allowedAccessLevels,
-            content_types: retrievalContentTypes,
-            min_importance: minImportance
-          }
-        )
-      }))
+    const strictAllFacts = await searchFactsAcrossDepartments(
+      client,
+      groupsToQuery,
+      query,
+      recallLimit * 2,
     );
-
-    const allFacts: any[] = [];
-    for (const result of memoryByDepartment) {
-      if (result.status === 'fulfilled') {
-        const { department: sourceDepartment, memory } = result.value;
-        allFacts.push(...memory.facts.map((fact: any) => ({ ...fact, _department: sourceDepartment })));
-      } else {
-        logger.warn('Recall failed for one department; continuing with remaining departments', result.reason);
-      }
-    }
-
-    // Filter results by access level and content type (Phase 7)
-    const filteredFacts = allFacts.filter((fact: any) => {
-      const accessLevel = fact.access_level || 'public';
-      const contentType = fact.content_type || 'fact';
-      const importance = typeof fact.importance === 'number' ? fact.importance : 3;
-
-      return (
-        allowedAccessLevels.includes(accessLevel) &&
-        retrievalContentTypes.includes(contentType) &&
-        importance >= minImportance
-      );
+    const strictFacts = filterAndCleanFacts({
+      allFacts: strictAllFacts,
+      minImportance,
     });
 
-    // Deduplicate facts that may appear across multiple queried departments.
-    const dedupedFacts: any[] = [];
-    const seen = new Set<string>();
-    for (const fact of filteredFacts) {
-      const key = fact.uuid || `${fact._department || 'unknown'}:${fact.fact}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      dedupedFacts.push(fact);
-    }
-
     logger.info(
-      `Recall queried ${departmentsToQuery.length} department(s), retrieved ${allFacts.length} facts, ` +
-      `filtered to ${dedupedFacts.length} for ${ctx.agentId}`
+      `Recall queried ${groupsToQuery.length} group(s), retrieved ${strictAllFacts.length} facts, ` +
+      `filtered to ${strictFacts.length} for ${ctx.agentId}`
     );
 
     if (summaryOnlyMode) {
+      let summaryFacts = strictFacts;
+      let summaryQuery = query;
+      let summarySource: 'facts' | 'nodes' = 'facts';
+
+      if (strictFacts.length > 0) {
+        summaryRetrievalOutcomes.labels(ctx.agentId, 'strict_hit').inc();
+        summaryRetrievalSources.labels(ctx.agentId, 'facts', 'hit').inc();
+        logger.info(
+          `Management summary recall strict pass found ${strictFacts.length} candidate facts for ${ctx.agentId}`,
+        );
+      } else {
+        summaryRetrievalOutcomes.labels(ctx.agentId, 'strict_miss').inc();
+        summaryRetrievalSources.labels(ctx.agentId, 'facts', 'miss').inc();
+        logger.info(`Management summary recall strict pass found no candidate facts for ${ctx.agentId}`);
+
+        const fallbackQuery = managementQueries.fallbackQuery || query;
+        const nodeResults = await searchNodesAcrossDepartments(
+          client,
+          groupsToQuery,
+          fallbackQuery,
+          Math.max(recallLimit * 2, 6),
+        );
+        const centeredFacts = await searchCenteredFactsFromNodes(
+          client,
+          nodeResults,
+          fallbackQuery,
+          recallLimit * 2,
+        );
+        const filteredCenteredFacts = filterAndCleanFacts({
+          allFacts: centeredFacts,
+          minImportance,
+        });
+
+        if (filteredCenteredFacts.length > 0) {
+          summaryRetrievalOutcomes.labels(ctx.agentId, 'centered_fact_hit').inc();
+          summaryRetrievalSources.labels(ctx.agentId, 'centered_facts', 'hit').inc();
+          logger.info(
+            `Management summary recall centered fact pass found ${filteredCenteredFacts.length} candidate facts for ${ctx.agentId}`,
+          );
+          summaryFacts = filteredCenteredFacts;
+          summaryQuery = fallbackQuery;
+          summarySource = 'facts';
+        } else {
+          summaryRetrievalOutcomes.labels(ctx.agentId, 'centered_fact_miss').inc();
+          summaryRetrievalSources.labels(ctx.agentId, 'centered_facts', 'miss').inc();
+          logger.info(
+            `Management summary recall centered fact pass found no candidate facts for ${ctx.agentId}`,
+          );
+
+          const nodeCandidates = nodesToSummaryCandidates(nodeResults);
+
+          if (nodeCandidates.length > 0) {
+            summaryRetrievalOutcomes.labels(ctx.agentId, 'node_summary_hit').inc();
+            summaryRetrievalSources.labels(ctx.agentId, 'nodes', 'hit').inc();
+            logger.info(
+              `Management summary recall node fallback found ${nodeCandidates.length} candidate node summaries for ${ctx.agentId}`,
+            );
+            summaryFacts = nodeCandidates;
+            summaryQuery = fallbackQuery;
+            summarySource = 'nodes';
+          } else {
+            summaryRetrievalOutcomes.labels(ctx.agentId, 'node_summary_miss').inc();
+            summaryRetrievalSources.labels(ctx.agentId, 'nodes', 'miss').inc();
+            logger.info(
+              `Management summary recall node fallback found no candidate node summaries for ${ctx.agentId}`,
+            );
+          }
+        }
+      }
+
       const capabilities = await client.detectCapabilities();
       if (capabilities.mode === 'native_communities') {
         logger.info('Graphiti community endpoints detected; using plugin-side summary fallback until native integration is added');
@@ -426,16 +518,19 @@ export async function recallHook(
       }
       summaryModeSelections.labels(capabilities.mode).inc();
 
-      const summaryCandidates = rrfRerank(dedupedFacts, Math.max(recallLimit * 2, 6));
+      const summaryCandidates = summaryFacts.slice(0, Math.max(recallLimit * 2, 6));
       if (summaryCandidates.length === 0) {
         logger.debug(`No facts available for summary generation for ${ctx.agentId}`);
         recallResults.labels(departmentLabel).observe(0);
         recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
-        return {};
+        return { monitorAttempted: true };
       }
+      logger.info(
+        `Management summary recall using ${summarySource} retrieval path with ${summaryCandidates.length} candidate summaries for ${ctx.agentId}`,
+      );
       const summary = await getOrGenerateSummary({
-        query,
-        departments: departmentsToQuery,
+        query: summaryQuery,
+        departments: groupsToQuery,
         facts: summaryCandidates,
         cacheTtlHours: runtimeConfig.summarization.cache_ttl_hours,
         model: runtimeConfig.llm.model,
@@ -448,32 +543,44 @@ export async function recallHook(
       recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
       return {
         prependSystemContext: formatSummaryAsContext(summary.summaryId, summary.summary, summary.sourceFactIds),
+        monitorAttempted: true,
       };
     }
 
-    // Rerank results (Phase 7)
-    const rerankedFacts = agentConfig.recall.reranker === 'cross_encoder'
-      ? await crossEncoderRerank(
-        dedupedFacts,
+    let factsForContext = strictFacts;
+    if (factsForContext.length === 0) {
+      const nodeResults = await searchNodesAcrossDepartments(
+        client,
+        groupsToQuery,
         query,
-        recallLimit,
-        runtimeConfig.llm.model,
-        runtimeConfig.llm.prompts?.reranker_system
-      )
-      : rrfRerank(dedupedFacts, recallLimit);
+        Math.max(recallLimit * 2, 6),
+      );
+      const centeredFacts = await searchCenteredFactsFromNodes(
+        client,
+        nodeResults,
+        query,
+        recallLimit * 2,
+      );
+      factsForContext = filterAndCleanFacts({
+        allFacts: centeredFacts,
+        minImportance,
+      });
+      logger.info(
+        `Fact-mode recall centered retry found ${factsForContext.length} facts for ${ctx.agentId}`,
+      );
+    }
 
-    // Format results into context
-    const context = formatFactsAsContext(rerankedFacts);
+    const context = formatFactsAsContext(factsForContext.slice(0, recallLimit));
 
     if (context) {
-      recallResults.labels(departmentLabel).observe(rerankedFacts.length);
+      recallResults.labels(departmentLabel).observe(Math.min(factsForContext.length, recallLimit));
       recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
-      return { prependSystemContext: context };
+      return { prependSystemContext: context, monitorAttempted: true };
     }
 
     recallResults.labels(departmentLabel).observe(0);
     recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
-    return {};
+    return { monitorAttempted: true };
   } catch (error) {
     recallErrors.labels(departmentLabel, 'recall_failed').inc();
     recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);

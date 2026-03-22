@@ -1,15 +1,6 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { captureHook } from '../hooks/capture';
-import { GraphitiClient } from '../graphiti-client';
 import { MemosConfig } from '../config';
-
-// Mock the classification module
-jest.mock('../utils/classification', () => ({
-  classifyContent: jest.fn(async () => ({
-    content_type: 'fact',
-    importance: 4
-  }))
-}));
 
 jest.mock('../utils/config', () => ({
   getAgentConfig: jest.fn().mockReturnValue({
@@ -17,22 +8,21 @@ jest.mock('../utils/config', () => ({
     access_level: 'restricted',
     department: 'test-devops',
     capture: {
-      enabled: true
+      enabled: true,
+      scope: 'department',
     },
     recall: {
-      content_types: ['fact'],
+      mode: 'facts',
+      scopes: ['department', 'company'],
       max_results: 10,
-      reranker: 'rrf',
       min_importance: 1,
-      department_scope: 'own'
     }
   }),
+  getCaptureGroupId: jest.fn(() => 'test-devops'),
   getDepartmentConfig: jest.fn(),
   loadConfig: jest.fn().mockReturnValue({
     ontology: {
-      entity_types: ['Person', 'System'],
-      content_types: ['fact', 'decision'],
-      access_levels: ['public', 'restricted', 'confidential']
+      entity_types: ['Person', 'Service'],
     }
   })
 }));
@@ -49,14 +39,14 @@ describe('Capture Hook', () => {
       access_level: 'restricted',
       department: 'test-devops',
       capture: {
-        enabled: true
+        enabled: true,
+        scope: 'department',
       },
       recall: {
-        content_types: ['fact'],
+        mode: 'facts',
+        scopes: ['department', 'company'],
         max_results: 10,
-        reranker: 'rrf',
         min_importance: 1,
-        department_scope: 'own'
       }
     });
 
@@ -118,6 +108,54 @@ describe('Capture Hook', () => {
     await captureHook({}, mockCtx, mockConfig, mockClient);
 
     expect(mockClient.addMessages).not.toHaveBeenCalled();
+  });
+
+  it('should skip transient status chatter like standing by', async () => {
+    mockCtx.messages = [
+      { role: 'user', content: 'Please keep watching this and be ready.' },
+      { role: 'assistant', content: 'Standing by.' },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).not.toHaveBeenCalled();
+  });
+
+  it('should skip generic plugin-testing chatter without durable findings', async () => {
+    mockCtx.messages = [
+      { role: 'user', content: 'Still testing the memos plugin. Need to write one or two messages to see if context monitoring is working.' },
+      { role: 'assistant', content: 'Understood. I will wait for another turn so we can see whether the monitor shows relevant context.' },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).not.toHaveBeenCalled();
+  });
+
+  it('should keep short but durable operational facts', async () => {
+    mockCtx.messages = [
+      { role: 'user', content: 'Please remember the deployment target.' },
+      { role: 'assistant', content: 'Production API is on port 8080 and rollback uses `docker compose down`.' },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).toHaveBeenCalled();
+  });
+
+  it('should keep concrete MEMOS debugging findings', async () => {
+    mockCtx.messages = [
+      { role: 'user', content: 'Please remember the MEMOS fix details.' },
+      {
+        role: 'assistant',
+        content:
+          'The metrics endpoint is `/plugins/memos/metrics`, `registerHttpRoute` must include auth: plugin, and the old failure was TypeError: registerPluginHttpRoute is not a function.',
+      },
+    ];
+
+    await captureHook({}, mockCtx, mockConfig, mockClient);
+
+    expect(mockClient.addMessages).toHaveBeenCalled();
   });
 
   it('should handle Graphiti errors gracefully', async () => {
