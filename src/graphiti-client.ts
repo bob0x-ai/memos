@@ -216,7 +216,11 @@ function normalizeNode(raw: Record<string, unknown>): NodeResult {
 
 function parseMcpStructuredContent<T>(result: McpCallToolResult): T {
   if (result.structuredContent && typeof result.structuredContent === 'object') {
-    return result.structuredContent as T;
+    const structured = result.structuredContent as Record<string, unknown>;
+    if (structured.result && typeof structured.result === 'object') {
+      return structured.result as T;
+    }
+    return structured as T;
   }
 
   const textPayload = result.content
@@ -694,6 +698,56 @@ export class GraphitiClient {
     }
   }
 
+  private async runPrimary<T>(
+    operation:
+      | 'add_messages'
+      | 'search_facts'
+      | 'search_nodes'
+      | 'get_memory'
+      | 'detect_capabilities'
+      | 'health_check'
+      | 'clear',
+    run: (backend: GraphitiBackend) => Promise<T>,
+  ): Promise<T> {
+    try {
+      const result = await run(this.primaryBackend);
+      backendRequests.labels(operation, this.primaryBackend.mode, 'ok').inc();
+      return result;
+    } catch (error) {
+      backendRequests.labels(operation, this.primaryBackend.mode, 'error').inc();
+      if (this.primaryBackend instanceof McpGraphitiBackend) {
+        this.primaryBackend.markConnectionError();
+      }
+      throw error;
+    }
+  }
+
+  private async runSecondary<T>(
+    operation:
+      | 'add_messages'
+      | 'search_facts'
+      | 'search_nodes'
+      | 'get_memory'
+      | 'detect_capabilities'
+      | 'health_check'
+      | 'clear',
+    run: (backend: GraphitiBackend) => Promise<T>,
+    reason: string,
+  ): Promise<T> {
+    if (!this.secondaryBackend) {
+      throw new Error(`No secondary Graphiti backend available for ${operation}`);
+    }
+
+    logger.warn(
+      `Graphiti ${this.primaryBackend.mode.toUpperCase()} backend ${reason}; ` +
+        `falling back to ${this.secondaryBackend.mode.toUpperCase()} for ${operation}`,
+    );
+
+    const result = await run(this.secondaryBackend);
+    backendRequests.labels(operation, this.secondaryBackend.mode, 'ok').inc();
+    return result;
+  }
+
   async addMessages(
     groupId: string,
     messages: Array<{
@@ -718,9 +772,20 @@ export class GraphitiClient {
       centerNodeUuid?: string;
     },
   ): Promise<SearchResult[]> {
-    return await this.withFallback('search_facts', (backend) =>
-      backend.searchFacts(groupId, query, limit, options),
-    );
+    try {
+      return await this.runPrimary('search_facts', (backend) =>
+        backend.searchFacts(groupId, query, limit, options),
+      );
+    } catch (error) {
+      if (!this.secondaryBackend) {
+        throw error;
+      }
+      return await this.runSecondary(
+        'search_facts',
+        (backend) => backend.searchFacts(groupId, query, limit, options),
+        'failed',
+      );
+    }
   }
 
   async searchNodes(
