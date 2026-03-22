@@ -7,10 +7,11 @@ import {
   summaryRequests,
 } from '../metrics/prometheus';
 import { estimateOpenAiCostUsd, observeLlmCall, parseChatCompletionUsage } from '../metrics/llm';
+import { isLowSignalFact, isMetaMemoryNoise } from './filter';
 import { logger } from './logger';
 
 const DEFAULT_SUMMARIZATION_SYSTEM_PROMPT =
-  'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.';
+  'You summarize memory facts for executives. Return concise markdown/plain text only, ready to inject directly into chat context. Structure the output with short topic sections using headings like "Topic: <name>" followed by 1-3 concise bullet points. Do not return JSON. Do not include startup/session/bootstrap chatter, self-referential memory-system meta commentary, duplicate points, or source fact IDs. Prefer concrete project/workstream facts over generic statements. If nothing relevant remains, say "No relevant memory signals were found for this query."';
 
 export interface SummaryCandidateFact {
   uuid?: string;
@@ -19,6 +20,7 @@ export interface SummaryCandidateFact {
   valid_at?: string;
   created_at?: string;
   _department?: string;
+  topicLabel?: string;
 }
 
 interface SummaryCacheEntry {
@@ -57,6 +59,26 @@ export type SummaryDrillDownLookupResult =
 const summaryCache = new Map<string, SummaryCacheEntry>();
 const summaryById = new Map<string, SummaryCacheEntry>();
 
+const STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'have', 'how',
+  'i', 'if', 'in', 'into', 'is', 'it', 'its', 'of', 'on', 'or', 'our', 'that', 'the',
+  'their', 'them', 'there', 'these', 'this', 'to', 'up', 'was', 'we', 'were', 'what',
+  'when', 'where', 'which', 'who', 'with', 'you', 'your', 'about', 'after', 'before',
+  'during', 'latest', 'today', 'now', 'moving', 'status', 'update', 'updates', 'current',
+  'currently', 'recent', 'recently', 'still', 'needs', 'need', 'using', 'used', 'use',
+  'runs', 'run', 'works', 'working', 'through',
+]);
+
+const BROAD_QUERY_TERMS = new Set([
+  'latest', 'today', 'moving', 'status', 'update', 'updates', 'current', 'recent', 'recently',
+  'anything', 'new', 'news', 'going', 'what', 'whats',
+]);
+
+const GENERIC_TOPIC_TOKENS = new Set([
+  'assistant', 'context', 'database', 'generated', 'memory', 'service', 'services',
+  'session', 'startup', 'storage', 'system',
+]);
+
 function normalizeQuery(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -87,9 +109,200 @@ function buildFactsDigest(facts: SummaryCandidateFact[]): string {
     importance: typeof f.importance === 'number' ? f.importance : 3,
     timestamp: f.valid_at || f.created_at || '',
     department: f._department || '',
+    topicLabel: f.topicLabel || '',
   }));
   const serialized = JSON.stringify(canonical);
   return createHash('sha256').update(serialized).digest('hex');
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[`"'()[\]{}:;,.!?/\\]+/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !STOPWORDS.has(token));
+}
+
+function normalizeFactForDedup(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\b(?:a|an|the|is|are|was|were|currently|now|still)\b/g, ' ')
+    .replace(/[`"'()[\]{}:;,.!?/\\]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function jaccardSimilarity(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const intersection = [...leftSet].filter((token) => rightSet.has(token)).length;
+  const union = new Set([...leftSet, ...rightSet]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function dedupeNearDuplicateFacts(facts: SummaryCandidateFact[]): SummaryCandidateFact[] {
+  const deduped: SummaryCandidateFact[] = [];
+
+  for (const fact of rankFacts(facts)) {
+    const normalized = normalizeFactForDedup(fact.fact);
+    const normalizedTokens = tokenize(normalized);
+    const duplicate = deduped.some((existing) => {
+      const existingNormalized = normalizeFactForDedup(existing.fact);
+      if (existingNormalized === normalized) {
+        return true;
+      }
+      const existingTokens = tokenize(existingNormalized);
+      return jaccardSimilarity(existingTokens, normalizedTokens) >= 0.82;
+    });
+    if (!duplicate) {
+      deduped.push(fact);
+    }
+  }
+
+  return deduped;
+}
+
+function isBroadExecutiveQuery(query: string): boolean {
+  const tokens = tokenize(query);
+  if (tokens.length === 0) {
+    return true;
+  }
+  return tokens.every((token) => BROAD_QUERY_TERMS.has(token));
+}
+
+function scoreFactRelevance(fact: SummaryCandidateFact, query: string): number {
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) {
+    return 0;
+  }
+  const factTokens = tokenize(fact.fact);
+  const overlap = queryTokens.filter((token) => factTokens.includes(token));
+  const normalizedQuery = query.toLowerCase();
+  const normalizedFact = fact.fact.toLowerCase();
+  let score = overlap.length / Math.max(1, Math.min(queryTokens.length, 6));
+
+  if (normalizedQuery.length > 12 && normalizedFact.includes(normalizedQuery)) {
+    score += 1;
+  }
+  for (const token of overlap) {
+    if (token.length >= 5) {
+      score += 0.1;
+    }
+  }
+
+  return score;
+}
+
+function deriveTopicTokens(fact: SummaryCandidateFact, query: string): string[] {
+  const queryTokens = tokenize(query);
+  const queryTokenSet = new Set(queryTokens);
+  const factTokens = tokenize(fact.fact);
+  const overlap = queryTokens.filter((token) => factTokens.includes(token)).slice(0, 3);
+  const remaining = factTokens.filter((token) => !queryTokenSet.has(token));
+  const tokens = [...overlap, ...remaining];
+  const preferred = tokens.filter((token) => !GENERIC_TOPIC_TOKENS.has(token));
+  return (preferred.length > 0 ? preferred : tokens).slice(0, 4);
+}
+
+function toTopicLabel(tokens: string[]): string {
+  if (tokens.length === 0) {
+    return 'General Updates';
+  }
+  return tokens
+    .slice(0, 3)
+    .map((token) => token.toUpperCase() === token ? token : token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+}
+
+type SummaryTopicGroup = {
+  label: string;
+  tokens: string[];
+  facts: SummaryCandidateFact[];
+  score: number;
+};
+
+function buildTopicGroups(
+  query: string,
+  facts: SummaryCandidateFact[],
+  maxTopics: number,
+  perTopicLimit: number,
+): SummaryTopicGroup[] {
+  const broadQuery = isBroadExecutiveQuery(query);
+  const groups: SummaryTopicGroup[] = [];
+
+  for (const fact of rankFacts(facts)) {
+    const relevance = scoreFactRelevance(fact, query);
+    if (!broadQuery && relevance < 0.16) {
+      continue;
+    }
+
+    const topicTokens = deriveTopicTokens(fact, query);
+    const score =
+      relevance +
+      ((typeof fact.importance === 'number' ? fact.importance : 3) / 10) +
+      (safeTimestamp(fact.valid_at || fact.created_at) / 10 ** 14);
+
+    let matchedGroup = groups.find((group) => {
+      const overlap = topicTokens.filter((token) => group.tokens.includes(token));
+      return overlap.length > 0;
+    });
+
+    if (!matchedGroup) {
+      matchedGroup = {
+        label: fact.topicLabel || toTopicLabel(topicTokens),
+        tokens: topicTokens,
+        facts: [],
+        score: 0,
+      };
+      groups.push(matchedGroup);
+    }
+
+    matchedGroup.facts.push({
+      ...fact,
+      topicLabel: matchedGroup.label,
+    });
+    matchedGroup.score = Math.max(matchedGroup.score, score);
+  }
+
+  return groups
+    .map((group) => ({
+      ...group,
+      facts: rankFacts(dedupeNearDuplicateFacts(group.facts)).slice(0, perTopicLimit),
+    }))
+    .filter((group) => group.facts.length > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, maxTopics);
+}
+
+export function prepareSummaryCandidates(params: {
+  query: string;
+  facts: SummaryCandidateFact[];
+  maxTopics?: number;
+  perTopicLimit?: number;
+}): SummaryCandidateFact[] {
+  const filtered = params.facts.filter((fact) => {
+    const text = String(fact.fact || '').trim();
+    return Boolean(text) && !isMetaMemoryNoise(text) && !isLowSignalFact(text);
+  });
+
+  const deduped = dedupeNearDuplicateFacts(filtered);
+  const groups = buildTopicGroups(
+    params.query,
+    deduped,
+    params.maxTopics ?? 3,
+    params.perTopicLimit ?? 4,
+  );
+
+  return groups.flatMap((group) =>
+    group.facts.map((fact) => ({
+      ...fact,
+      topicLabel: fact.topicLabel || group.label,
+    })),
+  );
 }
 
 function buildCacheKey(
@@ -107,41 +320,34 @@ function buildSummaryId(key: string): string {
   return `sum_${createHash('sha256').update(key).digest('hex').slice(0, 16)}`;
 }
 
-function extractJsonObject(raw: string): string | null {
+function stripMarkdownFence(raw: string): string {
   const trimmed = raw.trim();
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fenceMatch = trimmed.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i);
   if (fenceMatch?.[1]) {
-    return fenceMatch[1];
+    return fenceMatch[1].trim();
   }
-  const objectMatch = trimmed.match(/\{[\s\S]*\}/);
-  return objectMatch?.[0] || null;
+  return trimmed;
 }
 
-function parseSummaryResponse(raw: string): { summary: string; sourceFactIds: string[] } | null {
-  const jsonCandidate = extractJsonObject(raw);
-  if (!jsonCandidate) {
+function parseSummaryResponse(raw: string): { summary: string } | null {
+  const summary = stripMarkdownFence(raw).trim();
+  if (!summary) {
     return null;
   }
-  try {
-    const parsed = JSON.parse(jsonCandidate) as Record<string, unknown>;
-    const summary = String(parsed.summary || '').trim();
-    if (!summary) {
-      return null;
-    }
-    const sourceFactIds = Array.isArray(parsed.source_fact_ids)
-      ? parsed.source_fact_ids.map(String)
-      : [];
-    return { summary, sourceFactIds };
-  } catch {
-    return null;
-  }
+  return { summary };
 }
 
 function buildHeuristicSummary(
   query: string,
   facts: SummaryCandidateFact[]
 ): { summary: string; sourceFactIds: string[] } {
-  const rankedFacts = rankFacts(facts).slice(0, 8);
+  const groupedFacts = prepareSummaryCandidates({
+    query,
+    facts,
+    maxTopics: 3,
+    perTopicLimit: 4,
+  });
+  const rankedFacts = rankFacts(groupedFacts).slice(0, 12);
   if (rankedFacts.length === 0) {
     return {
       summary: 'No relevant memory signals were found for this query.',
@@ -149,12 +355,19 @@ function buildHeuristicSummary(
     };
   }
 
-  const lines = rankedFacts.map(f => `- ${f.fact}`);
-  const summary = [
-    `Query focus: ${query}`,
-    'Key signals:',
-    ...lines,
-  ].join('\n');
+  const grouped = new Map<string, SummaryCandidateFact[]>();
+  for (const fact of rankedFacts) {
+    const label = fact.topicLabel || 'General Updates';
+    const bucket = grouped.get(label) || [];
+    bucket.push(fact);
+    grouped.set(label, bucket);
+  }
+
+  const sections = [...grouped.entries()].map(([label, items]) => [
+    `Topic: ${label}`,
+    ...items.map((fact) => `- ${fact.fact}`),
+  ].join('\n'));
+  const summary = sections.join('\n\n');
 
   return {
     summary,
@@ -185,11 +398,18 @@ async function summarizeWithLLM(
   const startedAt = Date.now();
 
   try {
-    const candidates = rankFacts(facts).slice(0, 20).map((fact, index) => ({
+    const preparedFacts = prepareSummaryCandidates({
+      query,
+      facts,
+      maxTopics: 3,
+      perTopicLimit: 5,
+    }).slice(0, 20);
+    const candidates = preparedFacts.map((fact, index) => ({
       id: fact.uuid || `fact-${index + 1}`,
       fact: String(fact.fact || '').slice(0, 500),
       importance: typeof fact.importance === 'number' ? fact.importance : 3,
       department: fact._department || '',
+      topic: fact.topicLabel || '',
     }));
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -235,7 +455,7 @@ async function summarizeWithLLM(
     const content = data.choices?.[0]?.message?.content || '';
     const parsed = parseSummaryResponse(content);
     if (!parsed) {
-      throw new Error('Summary model returned invalid JSON');
+      throw new Error('Summary model returned empty text');
     }
     observeLlmCall({
       source: 'plugin',
@@ -246,7 +466,12 @@ async function summarizeWithLLM(
       usage,
       estimatedCostUsd: estimateOpenAiCostUsd(model, usage),
     });
-    return parsed;
+    return {
+      summary: parsed.summary,
+      sourceFactIds: preparedFacts
+        .map((fact) => fact.uuid)
+        .filter((id): id is string => Boolean(id)),
+    };
   } catch (error) {
     observeLlmCall({
       source: 'plugin',
@@ -267,11 +492,8 @@ export function clearSummaryCache(): void {
 }
 
 export function formatSummaryAsContext(summaryId: string, summary: string, sourceFactIds: string[]): string {
-  const sourceLine =
-    sourceFactIds.length > 0
-      ? `\n\nSource facts: ${sourceFactIds.slice(0, 10).join(', ')}`
-      : '';
-  return `## Executive Memory Summary\n\nSummary ID: ${summaryId}\n\n${summary}${sourceLine}\n`;
+  void sourceFactIds;
+  return `## Executive Memory Summary\n\nSummary ID: ${summaryId}\n\n${summary}\n`;
 }
 
 export function getSummaryDrillDown(

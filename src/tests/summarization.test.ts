@@ -4,6 +4,7 @@ import {
   formatSummaryAsContext,
   getSummaryDrillDown,
   getOrGenerateSummary,
+  prepareSummaryCandidates,
 } from '../utils/summarization';
 import { getMetrics, resetMetrics } from '../metrics/prometheus';
 
@@ -82,7 +83,60 @@ describe('Summarization Utils', () => {
 
     expect(context).toContain('Executive Memory Summary');
     expect(context).toContain('sum_test123');
-    expect(context).toContain('fact-1');
+    expect(context).not.toContain('fact-1');
+    expect(context).not.toContain('Source facts:');
+  });
+
+  it('should prepare grouped topic candidates and collapse near-duplicates', () => {
+    const prepared = prepareSummaryCandidates({
+      query: 'What changed in the memos plugin retrieval?',
+      facts: [
+        {
+          uuid: 'm1',
+          fact: 'The memos plugin retrieval path now parses nested MCP search results correctly.',
+          importance: 4,
+        },
+        {
+          uuid: 'm2',
+          fact: 'The memos plugin retrieval path parses nested MCP search results correctly.',
+          importance: 3,
+        },
+        {
+          uuid: 'd1',
+          fact: 'Staging rollout is currently blocked by FR-218.',
+          importance: 4,
+        },
+      ],
+    });
+
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.topicLabel).toContain('Memos');
+    expect(prepared[0]?.fact).toContain('nested MCP');
+  });
+
+  it('should build grouped heuristic summaries for broad executive queries', async () => {
+    const result = await getOrGenerateSummary({
+      query: 'latest updates',
+      departments: ['ops', 'company'],
+      facts: [
+        {
+          uuid: 'f1',
+          fact: 'The memos plugin retrieval now parses nested MCP search results.',
+          importance: 4,
+        },
+        {
+          uuid: 'f2',
+          fact: 'Staging rollout is blocked by FR-218 and needs approval.',
+          importance: 4,
+        },
+      ],
+      cacheTtlHours: 1,
+      model: 'gpt-4o-mini',
+    });
+
+    expect(result.summary).toContain('Topic:');
+    expect(result.summary).toContain('Memos');
+    expect(result.summary).toContain('Staging');
   });
 
   it('should return expired status for drill-down after ttl', async () => {
@@ -123,7 +177,7 @@ describe('Summarization Utils', () => {
         choices: [
           {
             message: {
-              content: '{"summary":"Executive summary","source_fact_ids":["f1"]}',
+              content: 'Topic: Ops\n- Executive summary',
             },
           },
         ],
@@ -147,6 +201,7 @@ describe('Summarization Utils', () => {
     });
 
     expect(result.provider).toBe('llm');
+    expect(result.summary).toContain('Topic: Ops');
 
     const metrics = await getMetrics();
     expect(metrics).toContain('use_case="summarization"');

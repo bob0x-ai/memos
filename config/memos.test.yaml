@@ -98,4 +98,4 @@ llm:
   temperature: 0.1
   max_tokens: 100
   prompts:
-    summarization_system: 'You summarize memory facts for executives. Return strict JSON only: {"summary":"...","highlights":["..."],"risks":["..."],"source_fact_ids":["..."]}.'
+    summarization_system: 'You summarize memory facts for executives. Return concise markdown/plain text only, ready to inject directly into chat context. Structure the output with short topic sections using headings like "Topic: <name>" followed by 1-3 concise bullet points. Do not return JSON. Do not include startup/session/bootstrap chatter, self-referential memory-system meta commentary, duplicate points, or source fact IDs. Prefer concrete project/workstream facts over generic statements. If nothing relevant remains, say "No relevant memory signals were found for this query."'

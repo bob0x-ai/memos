@@ -11,7 +11,11 @@ import {
   summaryRetrievalSources,
 } from '../metrics/prometheus';
 import { logger } from '../utils/logger';
-import { formatSummaryAsContext, getOrGenerateSummary } from '../utils/summarization';
+import {
+  formatSummaryAsContext,
+  getOrGenerateSummary,
+  prepareSummaryCandidates,
+} from '../utils/summarization';
 import { containsDurableSignal, isLowSignalFact, prepareMessagesForRecall } from '../utils/filter';
 
 /**
@@ -410,6 +414,14 @@ export async function recallHook(
   logger.debug(`Minimum importance: ${minImportance}`);
 
   const recallMessages = prepareMessagesForRecall(ctx.messages, 3);
+  const hasRealUserTopic = recallMessages.some((message) => message.role === 'user');
+
+  if (!hasRealUserTopic) {
+    logger.info(`No real user topic found for ${ctx.agentId}; suppressing startup auto-injection`);
+    recallResults.labels(departmentLabel).observe(0);
+    recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
+    return { monitorAttempted: true };
+  }
 
   // Build query from recent messages
   const workerQuery = buildQueryFromMessages(recallMessages);
@@ -419,7 +431,9 @@ export async function recallHook(
   const query = summaryOnlyMode ? managementQueries.primaryQuery : workerQuery;
   if (!query) {
     logger.debug(`No user query extracted for agent ${ctx.agentId}, skipping recall`);
-    return {};
+    recallResults.labels(departmentLabel).observe(0);
+    recallDuration.labels(departmentLabel).observe((Date.now() - startTime) / 1000);
+    return { monitorAttempted: true };
   }
 
   try {
@@ -518,7 +532,12 @@ export async function recallHook(
       }
       summaryModeSelections.labels(capabilities.mode).inc();
 
-      const summaryCandidates = summaryFacts.slice(0, Math.max(recallLimit * 2, 6));
+      const summaryCandidates = prepareSummaryCandidates({
+        query: summaryQuery,
+        facts: summaryFacts,
+        maxTopics: 3,
+        perTopicLimit: Math.max(Math.min(recallLimit, 4), 2),
+      });
       if (summaryCandidates.length === 0) {
         logger.debug(`No facts available for summary generation for ${ctx.agentId}`);
         recallResults.labels(departmentLabel).observe(0);
